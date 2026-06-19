@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+venv/
+.env
+
+# PyInstaller
+dist/
+build/
+*.spec
+
+# Archivos temporales de desarrollo
+*.log
+extracted.html
+temp_script.js
+main_script.js
+test_page.html
+Nueva carpeta/
+
+# Claude Code
+.claude/
