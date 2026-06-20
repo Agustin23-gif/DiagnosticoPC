@@ -15,6 +15,7 @@ python -m PyInstaller `
     --name "DiagnosticoPC" `
     --collect-all reportlab `
     --collect-all webview `
+    --hidden-import wmi `
     --hidden-import psutil `
     --hidden-import winreg `
     --add-data "assets;assets" `

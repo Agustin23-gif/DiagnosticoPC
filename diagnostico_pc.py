@@ -121,6 +121,7 @@ class Api:
         return platform.processor() or "N/D"
 
     def __init__(self):
+        self._cpu_value     = 0.0
         self._cpu_history   = [0.0] * 60
         self._lock          = threading.Lock()
         self._cpu_model = Api._get_cpu_name()
@@ -134,9 +135,31 @@ class Api:
         self._wh_lines     = []
         self._wh_done      = True
         self._wh_rc        = 0
+        t = threading.Thread(target=self._cpu_monitor_thread, daemon=True)
+        t.start()
+
+    def _cpu_monitor_thread(self):
+        import time
+        try:
+            import wmi
+            w = wmi.WMI()
+            while True:
+                cpu = w.Win32_Processor()[0]
+                with self._lock:
+                    self._cpu_value = float(cpu.LoadPercentage or 0)
+                time.sleep(1)
+        except Exception:
+            # Fallback a psutil si WMI falla
+            psutil.cpu_percent(interval=None)
+            time.sleep(1)
+            while True:
+                v = psutil.cpu_percent(interval=1)
+                with self._lock:
+                    self._cpu_value = v
 
     def get_metrics(self):
-        cpu = psutil.cpu_percent(interval=0.2)
+        with self._lock:
+            cpu = self._cpu_value
         ram = psutil.virtual_memory()
         with self._lock:
             self._cpu_history.append(cpu)
@@ -975,6 +998,44 @@ class Api:
         except Exception as e:
             return json.dumps({"error": str(e)})
 
+    # ── Taller de Software — Kit Esencial Windows (Ninite) ───────────
+    def deploy_ninite(self):
+        try:
+            if getattr(sys, 'frozen', False):
+                # Busca junto al .exe primero (distribución), luego en _MEIPASS (bundled)
+                candidates = [
+                    os.path.dirname(sys.executable),
+                    sys._MEIPASS,
+                ]
+            else:
+                candidates = [os.path.dirname(os.path.abspath(__file__))]
+
+            ninite_path = None
+            for base in candidates:
+                p = os.path.join(base, 'tools', 'ninite', 'ninite.exe')
+                if os.path.exists(p):
+                    ninite_path = p
+                    break
+
+            if ninite_path is None:
+                searched = ' | '.join(
+                    os.path.join(b, 'tools', 'ninite', 'ninite.exe') for b in candidates
+                )
+                return json.dumps({"error": f"No se encontró ninite.exe. Rutas buscadas: {searched}"})
+
+            import ctypes
+            ret = ctypes.windll.shell32.ShellExecuteW(
+                None, "runas", ninite_path, None,
+                os.path.dirname(ninite_path), 1
+            )
+            if ret <= 32:
+                return json.dumps({"error": "Se requieren permisos de administrador."})
+            return json.dumps({"ok": True})
+        except PermissionError:
+            return json.dumps({"error": "Se requieren permisos de administrador."})
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
     # ── Optimizar Windows (WinUtil) ───────────────────────────────────
     def launch_winutil(self):
         try:
@@ -1431,6 +1492,7 @@ html[data-theme="dark"] .btn-wh-run:hover:not(:disabled) { background:rgba(0,57,
 .sw-card-hdr { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
 .sw-card-icon { font-size: 18px; line-height: 1; }
 .sw-card-title { font-size: 13px; font-weight: 700; color: var(--txt); }
+.sw-card-desc { font-size: 11px; color: var(--txt2); line-height: 1.45; margin-bottom: 10px; }
 .sw-card-btns { display: flex; gap: 8px; flex-wrap: wrap; }
 .btn-sw { flex: 1; min-width: 110px; padding: 8px 12px; border-radius: var(--radius-sm); border: 1px solid var(--card-bd); background: transparent; color: var(--brand); font-family: var(--font-ui); font-size: 11.5px; font-weight: 600; cursor: pointer; transition: background .2s, transform .1s; text-align: center; white-space: nowrap; }
 .btn-sw:hover { background: rgba(0,57,166,.07); }
@@ -1522,6 +1584,16 @@ html[data-theme="dark"] .status-pill.crit { background:rgba(239,68,68,.15); }
       <div class="sw-card-btns">
         <button class="btn-sw" onclick="openOfficeDeployModal()">&#x2B07;&#xFE0F; Desplegar Office</button>
         <button class="btn-sw" onclick="openOfficeActivateModal()">&#x1F511; Activar Office</button>
+      </div>
+    </div>
+    <div class="sw-card">
+      <div class="sw-card-hdr">
+        <span class="sw-card-icon">&#x1F680;</span>
+        <span class="sw-card-title">Kit Esencial Windows</span>
+      </div>
+      <div class="sw-card-desc">Instalador de programas b&aacute;sicos para equipos nuevos o reci&eacute;n formateados</div>
+      <div class="sw-card-btns">
+        <button class="btn-sw" onclick="openNiniteModal()">&#x26A1; Instalar Programas Esenciales</button>
       </div>
     </div>
   </div>
@@ -1708,6 +1780,19 @@ html[data-theme="dark"] .status-pill.crit { background:rgba(239,68,68,.15); }
     <div style="display:flex;gap:10px;justify-content:flex-end">
       <button class="btn-chk-confirm-no" onclick="closeOfficeActivateModal()">Cancelar</button>
       <button class="btn-wu-confirm" id="btnOfficeActivate" onclick="confirmOfficeActivate()">Continuar</button>
+    </div>
+  </div>
+</div>
+
+<div id="niniteModal" class="modal-ov" onclick="closeNiniteOv(event)">
+  <div class="chk-modal-card" style="max-width:440px">
+    <button class="modal-x" onclick="closeNiniteModal()">&#x2715;</button>
+    <div style="font-size:16px;font-weight:700;margin-bottom:10px;color:var(--txt)">&#x1F680; Kit Esencial Windows</div>
+    <div style="font-size:13px;color:var(--txt2);line-height:1.65;margin-bottom:18px">Se ejecutar&aacute; el instalador de programas esenciales. Este proceso puede tardar varios minutos dependiendo de tu conexi&oacute;n a internet. &iquest;Deseas continuar?</div>
+    <div id="niniteErr" style="font-size:12px;color:var(--red);margin-bottom:10px;display:none"></div>
+    <div style="display:flex;gap:10px;justify-content:flex-end">
+      <button class="btn-chk-confirm-no" onclick="closeNiniteModal()">Cancelar</button>
+      <button class="btn-wu-confirm" id="btnNinite" onclick="confirmNinite()">Iniciar</button>
     </div>
   </div>
 </div>
@@ -2376,6 +2461,31 @@ function confirmOfficeActivate() {
     } else { closeOfficeActivateModal(); }
   }).catch(err => {
     const el = document.getElementById('officeActivateErr');
+    el.style.display = 'block'; el.textContent = '⚠️ Error: ' + err;
+    btn.disabled = false; btn.textContent = 'Reintentar';
+  });
+}
+
+// ── Taller de Software — Kit Esencial Windows ───────────────────────
+function openNiniteModal() {
+  document.getElementById('niniteModal').classList.add('open');
+  const e = document.getElementById('niniteErr'); e.style.display='none'; e.textContent='';
+  const b = document.getElementById('btnNinite'); b.disabled=false; b.textContent='Iniciar';
+}
+function closeNiniteModal() { document.getElementById('niniteModal').classList.remove('open'); }
+function closeNiniteOv(e) { if (e.target === document.getElementById('niniteModal')) closeNiniteModal(); }
+function confirmNinite() {
+  const btn = document.getElementById('btnNinite');
+  btn.disabled = true; btn.textContent = 'Iniciando...';
+  window.pywebview.api.deploy_ninite().then(raw => {
+    const res = JSON.parse(raw);
+    if (res.error) {
+      const el = document.getElementById('niniteErr');
+      el.style.display = 'block'; el.textContent = '⚠️ ' + res.error;
+      btn.disabled = false; btn.textContent = 'Reintentar';
+    } else { closeNiniteModal(); }
+  }).catch(err => {
+    const el = document.getElementById('niniteErr');
     el.style.display = 'block'; el.textContent = '⚠️ Error: ' + err;
     btn.disabled = false; btn.textContent = 'Reintentar';
   });
