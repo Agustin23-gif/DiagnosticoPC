@@ -717,7 +717,7 @@ class Api:
             from PIL import Image, ImageDraw, ImageFont
             import io, base64 as _b64
 
-            W, H = 1080, 1920
+            W, H = 1080, 2500
             now   = datetime.datetime.now()
             fname = now.strftime("Reporte_PCHouse_%Y-%m-%d_%H-%M.jpg")
 
@@ -753,7 +753,7 @@ class Api:
             BRAND2  = (0,   180, 216)
             FOOT_BG = (0,   39,  120)
             WHITE   = (255, 255, 255)
-            SHADOW  = (195, 208, 228)
+            SHADOW  = (196, 210, 230)
             TXT     = (15,  23,  42)
             LBL     = (100, 116, 139)
             GRAY_TR = (218, 224, 235)
@@ -765,14 +765,16 @@ class Api:
             RW_BG   = (255, 243, 205); RW_BD = (245, 158,  11); RW_TXT = (120,  60,   0)
             RO_BG   = (212, 237, 218); RO_BD = ( 40, 167,  69); RO_TXT = ( 21,  87,  36)
             RE_BG   = (248, 215, 218); RE_BD = (220,  53,  69); RE_TXT = (114,  28,  36)
+            H_LBL   = (180, 210, 255)
 
             HDR_H  = 300
             FOOT_H = 150
-            FOOT_Y = H - FOOT_H
-            GAP    = 24
-            PAD    = 28
-            BODY_Y = HDR_H + GAP
-            CPU_H  = 400
+            FOOT_Y = H - FOOT_H     # 2350
+            GAP    = 40
+            PAD    = 40
+            CPAD   = 50             # card internal padding
+            BODY_Y = HDR_H + GAP   # 340
+            CIR_R  = 130            # 260 px diameter
 
             def _tw(t, f): b = draw.textbbox((0, 0), t, font=f); return b[2] - b[0]
             def _th(t, f): b = draw.textbbox((0, 0), t, font=f); return b[3] - b[1]
@@ -790,28 +792,28 @@ class Api:
                 return lines
 
             def _sclr(p): return RED if p > 90 else (AMBER if p >= 70 else GREEN)
-            def _slbl(p): return "● CRÍTICO" if p > 90 else ("● MODERADO" if p >= 70 else "● ÓPTIMO")
+            def _slbl(p): return "CRITICO" if p > 90 else ("MODERADO" if p >= 70 else "OPTIMO")
 
             def _card(y0, h):
-                draw.rounded_rectangle([PAD+3, y0+4, W-PAD+3, y0+h+4], radius=20, fill=SHADOW)
-                draw.rounded_rectangle([PAD,   y0,   W-PAD,   y0+h],   radius=20, fill=WHITE)
+                draw.rounded_rectangle([PAD+4, y0+5, W-PAD+4, y0+h+5], radius=24, fill=SHADOW)
+                draw.rounded_rectangle([PAD,   y0,   W-PAD,   y0+h],   radius=24, fill=WHITE)
 
             def _circle(cx, cy, r, pct, clr):
                 bb = [cx-r, cy-r, cx+r, cy+r]
-                draw.arc(bb, start=-90, end=270, fill=GRAY_TR, width=20)
+                draw.arc(bb, start=-90, end=270, fill=GRAY_TR, width=22)
                 if pct > 0.5:
-                    draw.arc(bb, start=-90, end=-90+360*min(pct, 100)/100, fill=clr, width=20)
-                fn = _f(52, bold=True); pt = f"{int(round(pct))}%"
+                    draw.arc(bb, start=-90, end=-90+360*min(pct, 100)/100, fill=clr, width=22)
+                fn = _f(72, bold=True); pt = f"{int(round(pct))}%"
                 b  = draw.textbbox((0, 0), pt, font=fn)
-                draw.text((cx-(b[2]-b[0])//2, cy-(b[3]-b[1])//2-8), pt, font=fn, fill=TXT)
+                draw.text((cx-(b[2]-b[0])//2, cy-(b[3]-b[1])//2-10), pt, font=fn, fill=TXT)
                 fs = _f(22); bl = draw.textbbox((0, 0), "de uso", font=fs)
-                draw.text((cx-(bl[2]-bl[0])//2, cy+(b[3]-b[1])//2+4), "de uso", font=fs, fill=LBL)
+                draw.text((cx-(bl[2]-bl[0])//2, cy+(b[3]-b[1])//2+8), "de uso", font=fs, fill=LBL)
 
             def _badge(cx, y, text, bg):
-                fb = _f(24, bold=True); b = draw.textbbox((0, 0), text, font=fb)
-                tw_, th_ = b[2]-b[0], b[3]-b[1]; px, py = 26, 10
+                fb = _f(26, bold=True); b = draw.textbbox((0, 0), text, font=fb)
+                tw_, th_ = b[2]-b[0], b[3]-b[1]; px, py = 28, 12
                 x0 = cx-tw_//2-px; x1 = cx+tw_//2+px
-                draw.rounded_rectangle([x0, y, x1, y+th_+py*2], radius=22, fill=bg)
+                draw.rounded_rectangle([x0, y, x1, y+th_+py*2], radius=30, fill=bg)
                 draw.text((x0+px, y+py), text, font=fb, fill=WHITE)
                 return y + th_ + py*2
 
@@ -819,12 +821,12 @@ class Api:
                 bg, bd, tc = ((RO_BG, RO_BD, RO_TXT) if kind == "ok" else
                               (RE_BG, RE_BD, RE_TXT) if kind == "err" else
                               (RW_BG, RW_BD, RW_TXT))
-                font = _f(22); lns = _wrap(text, font, w - 40)
-                lh   = _th("A", font) + 8
-                bh   = len(lns) * lh + 28
-                draw.rounded_rectangle([x0, y, x0+w, y+bh], radius=12, fill=bg, outline=bd, width=2)
+                font = _f(24); lns = _wrap(text, font, w - 60)
+                lh   = _th("A", font) + 10
+                bh   = len(lns) * lh + 60
+                draw.rounded_rectangle([x0, y, x0+w, y+bh], radius=14, fill=bg, outline=bd, width=2)
                 for i, ln in enumerate(lns):
-                    draw.text((x0+20, y+14+i*lh), ln, font=font, fill=tc)
+                    draw.text((x0+30, y+30+i*lh), ln, font=font, fill=tc)
                 return y + bh
 
             # ── Collect data ──────────────────────────────────────────────────────
@@ -852,8 +854,7 @@ class Api:
             parts_by_letter = {}
             for _pt in parts:
                 _ltr = _pt["mp"][0].upper() if _pt["mp"] else None
-                if _ltr:
-                    parts_by_letter[_ltr] = _pt
+                if _ltr: parts_by_letter[_ltr] = _pt
 
             def _disk_pct(dnum_str):
                 for ltr in ({'0': ['C'], '1': ['D', 'E'], '2': ['E', 'F']}.get(dnum_str, ['C'])):
@@ -881,11 +882,18 @@ class Api:
             else:
                 rec_ram, rec_ram_k = ("Memoria en uso normal. No se requiere ninguna accion.", "ok")
 
-            _rf = _f(22)
-            _rl = _wrap(rec_ram, _rf, W - PAD*2 - 56 - 40)
-            _rh = len(_rl) * (_th("A", _rf) + 8) + 28
-            RAM_H  = 424 + _rh
-            STOR_H = max(FOOT_Y - BODY_Y - CPU_H - GAP - RAM_H - GAP, 320)
+            _rf  = _f(24)
+            _rw  = W - PAD*2 - CPAD*2 - 60
+            _rl  = _wrap(rec_ram, _rf, _rw)
+            _rlh = _th("A", _rf) + 10
+            _rh  = len(_rl) * _rlh + 60
+
+            # Heights: calculated from CPAD, circle size, and rec box
+            # CPU:  CPAD + label(54) + model_2lines(88) + gap(40) + circle(260) + gap(30) + badge(55) + CPAD
+            CPU_H  = CPAD + 54 + 88 + 40 + CIR_R*2 + 30 + 55 + CPAD
+            # RAM:  CPAD + label(54) + capacity(58) + typeinfo(59) + circle(260) + gap(30) + badge(55) + gap(20) + rec + CPAD
+            RAM_H  = CPAD + 54 + 58 + 59 + CIR_R*2 + 30 + 55 + 20 + _rh + CPAD
+            STOR_H = max(FOOT_Y - BODY_Y - CPU_H - GAP - RAM_H - GAP, 420)
 
             # ── Header ────────────────────────────────────────────────────────────
             C1, C2 = BRAND, BRAND2
@@ -896,69 +904,90 @@ class Api:
                     int(C1[1]+t*(C2[1]-C1[1])),
                     int(C1[2]+t*(C2[2]-C1[2]))))
 
-            txt_x = 40
+            # Left zone: logo + "PC HOUSE" on same horizontal level
+            logo_h = 100; txt_x = 40
             try:
                 li = Image.open(resource_path("assets/logo.jpg")).convert("RGB")
-                lh = 110; lw = int(li.width * lh / li.height)
-                li = li.resize((lw, lh), Image.LANCZOS)
-                img.paste(li, (40, (HDR_H - lh) // 2))
-                txt_x = 40 + lw + 24
+                logo_w = int(li.width * logo_h / li.height)
+                li = li.resize((logo_w, logo_h), Image.LANCZOS)
+                img.paste(li, (40, (HDR_H - logo_h) // 2))
+                txt_x = 40 + logo_w + 20
             except Exception:
                 pass
 
-            draw.text((txt_x, 58),  "PC HOUSE",                       font=_f(52, bold=True), fill=WHITE)
-            draw.text((txt_x, 126), "Reporte de Diagnóstico Técnico",  font=_f(22),            fill=(210, 235, 255))
+            f64b  = _f(64, bold=True)
+            f_sub = _f(22)
+            pc_h  = _th("PC HOUSE", f64b)
+            sub_h = _th("Reporte de Diagnostico Tecnico", f_sub)
+            blk_h = pc_h + 10 + sub_h
+            blk_y = (HDR_H - blk_h) // 2
+            draw.text((txt_x, blk_y),          "PC HOUSE",                       font=f64b,  fill=WHITE)
+            draw.text((txt_x, blk_y+pc_h+10),  "Reporte de Diagnostico Tecnico", font=f_sub, fill=(210, 235, 255))
 
-            rx = 560; ry = 24
-            draw.text((rx, ry),    "Equipo",          font=_f(22),            fill=(180, 210, 255)); ry += 30
-            draw.text((rx, ry),    self._hostname,     font=_f(36, bold=True), fill=WHITE);           ry += 50
-            draw.text((rx, ry),    "Usuario",          font=_f(22),            fill=(180, 210, 255)); ry += 28
-            draw.text((rx, ry),    username,           font=_f(30),            fill=WHITE);           ry += 42
-            draw.text((rx, ry),    "Sistema",          font=_f(20),            fill=(180, 210, 255)); ry += 26
-            draw.text((rx, ry),    os_name,            font=_f(26),            fill=WHITE);           ry += 38
-            draw.text((rx, ry),    now.strftime("%d/%m/%Y  %H:%M"), font=_f(24), fill=(200, 225, 255))
+            # Right zone with generous spacing
+            rx = 560; ry = 18
+            draw.text((rx, ry), "Equipo", font=_f(20), fill=H_LBL); ry += 28
+            hn_f = next((_f(s, bold=True) for s in [42, 36, 30]
+                         if _tw(self._hostname, _f(s, bold=True)) <= W-rx-30), _f(26, bold=True))
+            draw.text((rx, ry), self._hostname, font=hn_f, fill=WHITE)
+            ry += _th(self._hostname, hn_f) + 20
+            draw.text((rx, ry), "Usuario", font=_f(20), fill=H_LBL); ry += 28
+            draw.text((rx, ry), username, font=_f(32), fill=WHITE)
+            ry += _th(username, _f(32)) + 20
+            draw.text((rx, ry), "Sistema", font=_f(20), fill=H_LBL); ry += 28
+            draw.text((rx, ry), os_name, font=_f(26), fill=WHITE)
+            ry += _th(os_name, _f(26)) + 16
+            draw.text((rx, ry), now.strftime("%d/%m/%Y  %H:%M"), font=_f(22), fill=(200, 225, 255))
 
             # ── Card 1: CPU ───────────────────────────────────────────────────────
             y = BODY_Y
             _card(y, CPU_H)
-            _f20b = _f(20, bold=True)
-            draw.text((PAD+28, y+22), "PROCESADOR", font=_f20b, fill=LBL)
 
-            f28b = _f(28, bold=True)
-            model_lines = _wrap(cpu_model, f28b, W - PAD*2 - 56)[:2]
-            cy = y + 58
+            cy = y + CPAD
+            draw.text((PAD+CPAD, cy), "PROCESADOR", font=_f(20, bold=True), fill=LBL)
+            cy += 30 + 24   # gap + label height
+
+            f36b = _f(36, bold=True)
+            model_lines = _wrap(cpu_model, f36b, W - PAD*2 - CPAD*2)[:2]
             for ml in model_lines:
-                draw.text((PAD+28, cy), ml, font=f28b, fill=TXT); cy += 38
+                draw.text((PAD+CPAD, cy), ml, font=f36b, fill=TXT); cy += 44
+            cy += 40
 
-            cpu_clr   = _sclr(cpu_pct)
-            cir_r     = 80
-            cir_cy    = cy + 20 + cir_r
-            _circle(W // 2, cir_cy, cir_r, cpu_pct, cpu_clr)
-            badge_bot = _badge(W // 2, cir_cy + cir_r + 16, _slbl(cpu_pct), cpu_clr)
+            cpu_clr = _sclr(cpu_pct)
+            cir_cy  = cy + CIR_R
+            _circle(W//2, cir_cy, CIR_R, cpu_pct, cpu_clr)
+            _badge(W//2, cir_cy + CIR_R + 30, _slbl(cpu_pct), cpu_clr)
 
             # ── Card 2: RAM ───────────────────────────────────────────────────────
             y = BODY_Y + CPU_H + GAP
             _card(y, RAM_H)
-            draw.text((PAD+28, y+22), "MEMORIA RAM", font=_f20b, fill=LBL)
-            draw.text((PAD+28, y+58), f"{_fb(vm.used)} / {_fb(vm.total)}",
+
+            cy = y + CPAD
+            draw.text((PAD+CPAD, cy), "MEMORIA RAM", font=_f(20, bold=True), fill=LBL)
+            cy += 30 + 24
+            draw.text((PAD+CPAD, cy), f"{_fb(vm.used)} / {_fb(vm.total)}",
                       font=_f(40, bold=True), fill=TXT)
-            draw.text((PAD+28, y+112),
+            cy += 48 + 10
+            draw.text((PAD+CPAD, cy),
                       f"{ri.get('type','N/D')}  ·  {ri.get('freq','N/D')} MHz  ·  {ri.get('slots','N/D')}",
                       font=_f(24), fill=LBL)
+            cy += 29 + 30
 
-            ram_clr    = _sclr(ram_pct)
-            ram_cir_cy = y + 160 + cir_r
-            _circle(W // 2, ram_cir_cy, cir_r, ram_pct, ram_clr)
-            ram_bdg_b  = _badge(W // 2, ram_cir_cy + cir_r + 16, _slbl(ram_pct), ram_clr)
-            _rec(PAD+28, ram_bdg_b + 18, W - PAD*2 - 56, rec_ram, rec_ram_k)
+            ram_clr  = _sclr(ram_pct)
+            ram_ciry = cy + CIR_R
+            _circle(W//2, ram_ciry, CIR_R, ram_pct, ram_clr)
+            ram_bdg  = _badge(W//2, ram_ciry + CIR_R + 30, _slbl(ram_pct), ram_clr)
+            _rec(PAD+CPAD, ram_bdg + 20, W - PAD*2 - CPAD*2, rec_ram, rec_ram_k)
 
             # ── Card 3: Storage ───────────────────────────────────────────────────
             y = BODY_Y + CPU_H + GAP + RAM_H + GAP
             _card(y, STOR_H)
-            draw.text((PAD+28, y+22), "ALMACENAMIENTO", font=_f20b, fill=LBL)
 
-            dy = y + 58
-            inn_w = W - PAD*2 - 56
+            cy = y + CPAD
+            draw.text((PAD+CPAD, cy), "ALMACENAMIENTO", font=_f(20, bold=True), fill=LBL)
+            cy += 30 + 24
+
+            inn_w = W - PAD*2 - CPAD*2
 
             for dh in (disk_health or []):
                 dname   = str(dh.get("name",   "") or "").strip()
@@ -984,95 +1013,108 @@ class Api:
                 else:
                     rec_d, rec_dk = ("Disco operativo. Monitorear periodicamente.", "ok")
 
-                f28b2    = _f(28, bold=True)
-                nm_lines = _wrap(dname[:60], f28b2, inn_w - 16)[:2] or ["(desconocido)"]
-                frd      = _f(22)
-                rld      = _wrap(rec_d, frd, inn_w - 48)
-                sub_h    = (16 + len(nm_lines)*38 + 10 + 44 + 14
-                            + 28 + 10 + 36 + 10 + 30 + 14
-                            + len(rld)*(_th("A", frd)+8) + 28 + 20)
+                # Pre-compute sub-card height
+                f36b2  = _f(36, bold=True)
+                nm_lns = _wrap(dname[:60], f36b2, inn_w - 32)[:2] or ["(desconocido)"]
+                frd    = _f(24)
+                rld    = _wrap(rec_d, frd, inn_w - 32 - 60)
+                rlh_d  = _th("A", frd) + 10
+                rbh_d  = len(rld) * rlh_d + 60
+                sub_h  = (16
+                          + len(nm_lns)*44 + 14    # name lines
+                          + 46 + 18                # badge+cap row
+                          + 30 + 14                # usage bar
+                          + 46 + 14                # % usado
+                          + 30 + 18                # activity
+                          + rbh_d + 16)            # rec box + bottom pad
 
-                sx0 = PAD + 16; sx1 = W - PAD - 16
-                draw.rounded_rectangle([sx0, dy, sx1, dy+sub_h], radius=14, fill=(248, 250, 252))
+                sx0 = PAD + CPAD // 2
+                sx1 = W - PAD - CPAD // 2
+                draw.rounded_rectangle([sx0, cy, sx1, cy+sub_h], radius=16, fill=(248, 250, 252))
 
-                cy2 = dy + 16
-                for nl in nm_lines:
-                    draw.text((sx0+16, cy2), nl, font=f28b2, fill=TXT); cy2 += 38
-                cy2 += 10
+                cy2 = cy + 16
+                for nl in nm_lns:
+                    draw.text((sx0+18, cy2), nl, font=f36b2, fill=TXT); cy2 += 44
+                cy2 += 14
 
+                # Type badge + capacity
                 type_bg = SSD_BG if ("SSD" in dtype.upper() or "NVMe" in dtype.upper()) else HDD_BG
-                fbsm    = _f(22, bold=True)
+                fbsm    = _f(24, bold=True)
                 bb_bt   = draw.textbbox((0, 0), dtype.upper(), font=fbsm)
-                tw_bt   = bb_bt[2]-bb_bt[0]; th_bt = bb_bt[3]-bb_bt[1]
-                bpx = 14; bpy = 7
-                bx0 = sx0+16; bx1 = bx0+tw_bt+bpx*2
-                by0 = cy2;    by1 = by0+th_bt+bpy*2
-                draw.rounded_rectangle([bx0, by0, bx1, by1], radius=10, fill=type_bg)
+                bpx, bpy = 16, 8
+                bx0 = sx0+18; bx1 = bx0+(bb_bt[2]-bb_bt[0])+bpx*2
+                by0 = cy2;    by1 = by0+(bb_bt[3]-bb_bt[1])+bpy*2
+                draw.rounded_rectangle([bx0, by0, bx1, by1], radius=12, fill=type_bg)
                 draw.text((bx0+bpx, by0+bpy), dtype.upper(), font=fbsm, fill=WHITE)
-                draw.text((bx1+14, by0-2), dsize, font=_f(32, bold=True), fill=TXT)
-                cy2 = by1 + 14
+                draw.text((bx1+22, by0-2), dsize, font=_f(36, bold=True), fill=TXT)
+                cy2 = by1 + 18
 
-                bx0b = sx0+16; bx1b = sx1-16; bw = bx1b - bx0b
+                # Usage bar 30px
+                bx0b = sx0+18; bx1b = sx1-18; bw = bx1b - bx0b
                 bar_clr = RED if d_pct > 90 else (AMBER if d_pct > 75 else GREEN)
-                draw.rounded_rectangle([bx0b, cy2, bx1b, cy2+28], radius=14, fill=GRAY_TR)
+                draw.rounded_rectangle([bx0b, cy2, bx1b, cy2+30], radius=15, fill=GRAY_TR)
                 fw_ = int(bw * min(d_pct, 100) / 100)
-                if fw_ > 14:
-                    draw.rounded_rectangle([bx0b, cy2, bx0b+fw_, cy2+28], radius=14, fill=bar_clr)
-                cy2 += 38
-
-                pct_clr = RED if d_pct > 90 else (AMBER if d_pct > 75 else TXT)
-                draw.text((sx0+16, cy2), f"{d_pct:.0f}% usado", font=_f(28, bold=True), fill=pct_clr)
-                cy2 += 46
-
-                draw.text((sx0+16, cy2), f"Actividad I/O: {act_pct:.1f}%", font=_f(22), fill=LBL)
+                if fw_ > 16:
+                    draw.rounded_rectangle([bx0b, cy2, bx0b+fw_, cy2+30], radius=15, fill=bar_clr)
                 cy2 += 44
 
-                _rec(sx0+16, cy2, (sx1-sx0)-32, rec_d, rec_dk)
-                dy = dy + sub_h + 16
+                # "% usado" 38px bold
+                pct_clr = RED if d_pct > 90 else (AMBER if d_pct > 75 else TXT)
+                draw.text((sx0+18, cy2), f"{d_pct:.0f}% usado", font=_f(38, bold=True), fill=pct_clr)
+                cy2 += 60
+
+                # Activity 24px
+                draw.text((sx0+18, cy2), f"Actividad I/O: {act_pct:.1f}%", font=_f(24), fill=LBL)
+                cy2 += 48
+
+                _rec(sx0+18, cy2, (sx1-sx0)-36, rec_d, rec_dk)
+                cy = cy + sub_h + 16
 
             if not disk_health:
-                draw.text((PAD+28, dy+10), "No se detectaron discos físicos",
-                          font=_f(24), fill=LBL); dy += 50
+                draw.text((PAD+CPAD, cy+10), "No se detectaron discos fisicos",
+                          font=_f(24), fill=LBL); cy += 54
 
+            # Partitions (only if space remains)
             if parts:
-                max_y = y + STOR_H - 20
-                needed = 32 + len(parts[:5]) * 48
-                if dy + needed < max_y:
-                    draw.text((PAD+28, dy+4), "Particiones", font=_f(20, bold=True), fill=LBL); dy += 34
-                    for _pt in parts[:5]:
+                max_y  = y + STOR_H - 24
+                f_pt   = _f(24)
+                needed = 40 + len(parts[:4]) * 58
+                if cy + needed < max_y:
+                    draw.text((PAD+CPAD, cy+6), "Particiones", font=_f(22, bold=True), fill=LBL); cy += 40
+                    for _pt in parts[:4]:
                         pclr = RED if _pt["pct"] > 90 else (AMBER if _pt["pct"] > 75 else LBL)
-                        draw.text((PAD+28, dy),
+                        draw.text((PAD+CPAD, cy),
                                   f"{_pt['mp']}   {_pt['used']} / {_pt['total']}   {_pt['pct']:.0f}%",
-                                  font=_f(22), fill=TXT)
-                        bx0p = PAD+200; bx1p = W-PAD-32; bhp = 14
-                        draw.rounded_rectangle([bx0p, dy+28, bx1p, dy+28+bhp], radius=7, fill=GRAY_TR)
+                                  font=f_pt, fill=TXT)
+                        bx0p = PAD+CPAD+240; bx1p = W-PAD-CPAD
+                        draw.rounded_rectangle([bx0p, cy+34, bx1p, cy+34+16], radius=8, fill=GRAY_TR)
                         fwp = int((bx1p-bx0p)*min(_pt["pct"], 100)/100)
-                        if fwp > 8:
-                            draw.rounded_rectangle([bx0p, dy+28, bx0p+fwp, dy+28+bhp], radius=7, fill=pclr)
-                        dy += 48
+                        if fwp > 12:
+                            draw.rounded_rectangle([bx0p, cy+34, bx0p+fwp, cy+34+16], radius=8, fill=pclr)
+                        cy += 58
 
             # ── Footer ────────────────────────────────────────────────────────────
             draw.rectangle([0, FOOT_Y, W, H], fill=FOOT_BG)
-            ftx = 36
+            ftx = 40
             try:
                 li2 = Image.open(resource_path("assets/logo.jpg")).convert("RGB")
-                l2h = 78; l2w = int(li2.width * l2h / li2.height)
+                l2h = 80; l2w = int(li2.width * l2h / li2.height)
                 li2 = li2.resize((l2w, l2h), Image.LANCZOS)
-                img.paste(li2, (36, FOOT_Y + (FOOT_H - l2h) // 2))
-                ftx = 36 + l2w + 20
+                img.paste(li2, (40, FOOT_Y + (FOOT_H - l2h) // 2))
+                ftx = 40 + l2w + 24
             except Exception:
                 pass
-            fyt = FOOT_Y + 22
-            draw.text((ftx, fyt),    "Diagnóstico realizado por PC House",
-                      font=_f(28, bold=True), fill=WHITE)
-            draw.text((ftx, fyt+42), "Reporte generado automáticamente por DiagnosticoPC v3.1",
-                      font=_f(20), fill=(180, 200, 240))
-            draw.text((ftx, fyt+78), now.strftime("Generado el %d/%m/%Y a las %H:%M"),
-                      font=_f(20), fill=(160, 185, 225))
+            fyt = FOOT_Y + 16
+            draw.text((ftx, fyt),    "Diagnostico realizado por PC House",
+                      font=_f(32, bold=True), fill=WHITE)
+            draw.text((ftx, fyt+48), "Reporte generado automaticamente por DiagnosticoPC v3.1",
+                      font=_f(22), fill=(180, 200, 240))
+            draw.text((ftx, fyt+86), now.strftime("Generado el %d/%m/%Y a las %H:%M"),
+                      font=_f(22), fill=(160, 185, 225))
 
             img.save(out_path, "JPEG", quality=92, optimize=True)
             preview = img.copy()
-            preview.thumbnail((540, 960), Image.LANCZOS)
+            preview.thumbnail((540, 1080), Image.LANCZOS)
             buf = io.BytesIO()
             preview.save(buf, "JPEG", quality=78)
             b64 = _b64.b64encode(buf.getvalue()).decode()
