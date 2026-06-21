@@ -712,6 +712,383 @@ class Api:
                                                fontSize=7, textColor=colors.grey, alignment=1)))
         doc.build(story)
 
+    def generate_visual_report(self):
+        try:
+            from PIL import Image, ImageDraw, ImageFont
+            import io, base64 as _b64
+
+            W, H = 1080, 1920
+            now   = datetime.datetime.now()
+            fname = now.strftime("Reporte_PCHouse_%Y-%m-%d_%H-%M.jpg")
+
+            downloads = os.path.join(os.path.expanduser("~"), "Downloads")
+            if not os.path.exists(downloads):
+                downloads = os.path.join(os.path.expanduser("~"), "Descargas")
+            if not os.path.exists(downloads):
+                downloads = os.path.expanduser("~")
+            os.makedirs(downloads, exist_ok=True)
+            out_path = os.path.join(downloads, fname)
+
+            def _f(size, bold=False):
+                paths = ([r"C:\Windows\Fonts\segoeuib.ttf",
+                           r"C:\Windows\Fonts\arialbd.ttf",
+                           r"C:\Windows\Fonts\calibrib.ttf"] if bold else
+                          [r"C:\Windows\Fonts\segoeui.ttf",
+                           r"C:\Windows\Fonts\arial.ttf",
+                           r"C:\Windows\Fonts\calibri.ttf"])
+                for p in paths:
+                    try:
+                        return ImageFont.truetype(p, size)
+                    except Exception:
+                        pass
+                try:
+                    return ImageFont.load_default(size=size)
+                except Exception:
+                    return ImageFont.load_default()
+
+            img  = Image.new("RGB", (W, H), (240, 244, 248))
+            draw = ImageDraw.Draw(img)
+
+            BRAND   = (0,   57,  166)
+            BRAND2  = (0,   180, 216)
+            FOOT_BG = (0,   39,  120)
+            WHITE   = (255, 255, 255)
+            SHADOW  = (195, 208, 228)
+            TXT     = (15,  23,  42)
+            LBL     = (100, 116, 139)
+            GRAY_TR = (218, 224, 235)
+            GREEN   = (16,  185, 129)
+            AMBER   = (245, 158, 11)
+            RED     = (239, 68,  68)
+            SSD_BG  = (0,   86,  179)
+            HDD_BG  = (234, 88,  12)
+            RW_BG   = (255, 243, 205); RW_BD = (245, 158,  11); RW_TXT = (120,  60,   0)
+            RO_BG   = (212, 237, 218); RO_BD = ( 40, 167,  69); RO_TXT = ( 21,  87,  36)
+            RE_BG   = (248, 215, 218); RE_BD = (220,  53,  69); RE_TXT = (114,  28,  36)
+
+            HDR_H  = 300
+            FOOT_H = 150
+            FOOT_Y = H - FOOT_H
+            GAP    = 24
+            PAD    = 28
+            BODY_Y = HDR_H + GAP
+            CPU_H  = 400
+
+            def _tw(t, f): b = draw.textbbox((0, 0), t, font=f); return b[2] - b[0]
+            def _th(t, f): b = draw.textbbox((0, 0), t, font=f); return b[3] - b[1]
+
+            def _wrap(text, font, max_w):
+                words = text.split()
+                lines, cur = [], ""
+                for w in words:
+                    test = (cur + " " + w).strip()
+                    if draw.textbbox((0, 0), test, font=font)[2] > max_w and cur:
+                        lines.append(cur); cur = w
+                    else:
+                        cur = test
+                if cur: lines.append(cur)
+                return lines
+
+            def _sclr(p): return RED if p > 90 else (AMBER if p >= 70 else GREEN)
+            def _slbl(p): return "● CRÍTICO" if p > 90 else ("● MODERADO" if p >= 70 else "● ÓPTIMO")
+
+            def _card(y0, h):
+                draw.rounded_rectangle([PAD+3, y0+4, W-PAD+3, y0+h+4], radius=20, fill=SHADOW)
+                draw.rounded_rectangle([PAD,   y0,   W-PAD,   y0+h],   radius=20, fill=WHITE)
+
+            def _circle(cx, cy, r, pct, clr):
+                bb = [cx-r, cy-r, cx+r, cy+r]
+                draw.arc(bb, start=-90, end=270, fill=GRAY_TR, width=20)
+                if pct > 0.5:
+                    draw.arc(bb, start=-90, end=-90+360*min(pct, 100)/100, fill=clr, width=20)
+                fn = _f(52, bold=True); pt = f"{int(round(pct))}%"
+                b  = draw.textbbox((0, 0), pt, font=fn)
+                draw.text((cx-(b[2]-b[0])//2, cy-(b[3]-b[1])//2-8), pt, font=fn, fill=TXT)
+                fs = _f(22); bl = draw.textbbox((0, 0), "de uso", font=fs)
+                draw.text((cx-(bl[2]-bl[0])//2, cy+(b[3]-b[1])//2+4), "de uso", font=fs, fill=LBL)
+
+            def _badge(cx, y, text, bg):
+                fb = _f(24, bold=True); b = draw.textbbox((0, 0), text, font=fb)
+                tw_, th_ = b[2]-b[0], b[3]-b[1]; px, py = 26, 10
+                x0 = cx-tw_//2-px; x1 = cx+tw_//2+px
+                draw.rounded_rectangle([x0, y, x1, y+th_+py*2], radius=22, fill=bg)
+                draw.text((x0+px, y+py), text, font=fb, fill=WHITE)
+                return y + th_ + py*2
+
+            def _rec(x0, y, w, text, kind="warn"):
+                bg, bd, tc = ((RO_BG, RO_BD, RO_TXT) if kind == "ok" else
+                              (RE_BG, RE_BD, RE_TXT) if kind == "err" else
+                              (RW_BG, RW_BD, RW_TXT))
+                font = _f(22); lns = _wrap(text, font, w - 40)
+                lh   = _th("A", font) + 8
+                bh   = len(lns) * lh + 28
+                draw.rounded_rectangle([x0, y, x0+w, y+bh], radius=12, fill=bg, outline=bd, width=2)
+                for i, ln in enumerate(lns):
+                    draw.text((x0+20, y+14+i*lh), ln, font=font, fill=tc)
+                return y + bh
+
+            # ── Collect data ──────────────────────────────────────────────────────
+            with self._lock:
+                cpu_pct  = self._cpu_value
+                disk_act = dict(self._disk_activity)
+            cpu_model   = (self._cpu_model or "N/D").strip()
+            vm          = psutil.virtual_memory()
+            ri          = self._ram_info
+            ram_pct     = vm.percent
+            username    = os.environ.get("USERNAME", "N/D")
+            os_name     = f"{platform.system()} {platform.release()}"
+            disk_health = (self._disk_health_cache
+                           if self._disk_health_cache is not None
+                           else self._get_disk_health()) or []
+            parts = []
+            for _p in psutil.disk_partitions(all=False):
+                try:
+                    _u = psutil.disk_usage(_p.mountpoint)
+                    parts.append({"mp": _p.mountpoint, "pct": _u.percent,
+                                  "used": _fb(_u.used), "total": _fb(_u.total)})
+                except Exception:
+                    pass
+
+            parts_by_letter = {}
+            for _pt in parts:
+                _ltr = _pt["mp"][0].upper() if _pt["mp"] else None
+                if _ltr:
+                    parts_by_letter[_ltr] = _pt
+
+            def _disk_pct(dnum_str):
+                for ltr in ({'0': ['C'], '1': ['D', 'E'], '2': ['E', 'F']}.get(dnum_str, ['C'])):
+                    if ltr in parts_by_letter:
+                        return parts_by_letter[ltr]["pct"]
+                return max((p["pct"] for p in parts), default=0.0)
+
+            # RAM recommendation (pre-compute to size the card)
+            slots_str  = str(ri.get('slots', ''))
+            slots_full = False
+            try:
+                if 'de' in slots_str:
+                    _sp = slots_str.split('de')
+                    _u2, _t2 = int(_sp[0].strip()), int(_sp[1].strip().split()[0])
+                    slots_full = (_u2 >= _t2 > 0)
+            except Exception:
+                pass
+
+            if ram_pct > 90:
+                rec_ram, rec_ram_k = ("CRITICO: RAM al limite. El rendimiento del equipo esta severamente afectado. Ampliar urgentemente.", "err")
+            elif ram_pct > 80 and slots_full:
+                rec_ram, rec_ram_k = ("Aviso: Todos los slots estan ocupados. Para ampliar la RAM se deben reemplazar los modulos actuales.", "warn")
+            elif ram_pct > 80:
+                rec_ram, rec_ram_k = ("Aviso: RAM elevada. Se recomienda ampliar la memoria para mejorar el rendimiento.", "warn")
+            else:
+                rec_ram, rec_ram_k = ("Memoria en uso normal. No se requiere ninguna accion.", "ok")
+
+            _rf = _f(22)
+            _rl = _wrap(rec_ram, _rf, W - PAD*2 - 56 - 40)
+            _rh = len(_rl) * (_th("A", _rf) + 8) + 28
+            RAM_H  = 424 + _rh
+            STOR_H = max(FOOT_Y - BODY_Y - CPU_H - GAP - RAM_H - GAP, 320)
+
+            # ── Header ────────────────────────────────────────────────────────────
+            C1, C2 = BRAND, BRAND2
+            for _y in range(HDR_H):
+                t = _y / HDR_H
+                draw.line([(0, _y), (W-1, _y)], fill=(
+                    int(C1[0]+t*(C2[0]-C1[0])),
+                    int(C1[1]+t*(C2[1]-C1[1])),
+                    int(C1[2]+t*(C2[2]-C1[2]))))
+
+            txt_x = 40
+            try:
+                li = Image.open(resource_path("assets/logo.jpg")).convert("RGB")
+                lh = 110; lw = int(li.width * lh / li.height)
+                li = li.resize((lw, lh), Image.LANCZOS)
+                img.paste(li, (40, (HDR_H - lh) // 2))
+                txt_x = 40 + lw + 24
+            except Exception:
+                pass
+
+            draw.text((txt_x, 58),  "PC HOUSE",                       font=_f(52, bold=True), fill=WHITE)
+            draw.text((txt_x, 126), "Reporte de Diagnóstico Técnico",  font=_f(22),            fill=(210, 235, 255))
+
+            rx = 560; ry = 24
+            draw.text((rx, ry),    "Equipo",          font=_f(22),            fill=(180, 210, 255)); ry += 30
+            draw.text((rx, ry),    self._hostname,     font=_f(36, bold=True), fill=WHITE);           ry += 50
+            draw.text((rx, ry),    "Usuario",          font=_f(22),            fill=(180, 210, 255)); ry += 28
+            draw.text((rx, ry),    username,           font=_f(30),            fill=WHITE);           ry += 42
+            draw.text((rx, ry),    "Sistema",          font=_f(20),            fill=(180, 210, 255)); ry += 26
+            draw.text((rx, ry),    os_name,            font=_f(26),            fill=WHITE);           ry += 38
+            draw.text((rx, ry),    now.strftime("%d/%m/%Y  %H:%M"), font=_f(24), fill=(200, 225, 255))
+
+            # ── Card 1: CPU ───────────────────────────────────────────────────────
+            y = BODY_Y
+            _card(y, CPU_H)
+            _f20b = _f(20, bold=True)
+            draw.text((PAD+28, y+22), "PROCESADOR", font=_f20b, fill=LBL)
+
+            f28b = _f(28, bold=True)
+            model_lines = _wrap(cpu_model, f28b, W - PAD*2 - 56)[:2]
+            cy = y + 58
+            for ml in model_lines:
+                draw.text((PAD+28, cy), ml, font=f28b, fill=TXT); cy += 38
+
+            cpu_clr   = _sclr(cpu_pct)
+            cir_r     = 80
+            cir_cy    = cy + 20 + cir_r
+            _circle(W // 2, cir_cy, cir_r, cpu_pct, cpu_clr)
+            badge_bot = _badge(W // 2, cir_cy + cir_r + 16, _slbl(cpu_pct), cpu_clr)
+
+            # ── Card 2: RAM ───────────────────────────────────────────────────────
+            y = BODY_Y + CPU_H + GAP
+            _card(y, RAM_H)
+            draw.text((PAD+28, y+22), "MEMORIA RAM", font=_f20b, fill=LBL)
+            draw.text((PAD+28, y+58), f"{_fb(vm.used)} / {_fb(vm.total)}",
+                      font=_f(40, bold=True), fill=TXT)
+            draw.text((PAD+28, y+112),
+                      f"{ri.get('type','N/D')}  ·  {ri.get('freq','N/D')} MHz  ·  {ri.get('slots','N/D')}",
+                      font=_f(24), fill=LBL)
+
+            ram_clr    = _sclr(ram_pct)
+            ram_cir_cy = y + 160 + cir_r
+            _circle(W // 2, ram_cir_cy, cir_r, ram_pct, ram_clr)
+            ram_bdg_b  = _badge(W // 2, ram_cir_cy + cir_r + 16, _slbl(ram_pct), ram_clr)
+            _rec(PAD+28, ram_bdg_b + 18, W - PAD*2 - 56, rec_ram, rec_ram_k)
+
+            # ── Card 3: Storage ───────────────────────────────────────────────────
+            y = BODY_Y + CPU_H + GAP + RAM_H + GAP
+            _card(y, STOR_H)
+            draw.text((PAD+28, y+22), "ALMACENAMIENTO", font=_f20b, fill=LBL)
+
+            dy = y + 58
+            inn_w = W - PAD*2 - 56
+
+            for dh in (disk_health or []):
+                dname   = str(dh.get("name",   "") or "").strip()
+                dtype   = str(dh.get("type",   "N/D") or "N/D")
+                dhealth = str(dh.get("health", "") or "")
+                dsize   = str(dh.get("size",   "N/D") or "N/D")
+                dnum    = str(dh.get("disk_num", "") or "")
+                act_pct = disk_act.get(f"PhysicalDrive{dnum}", 0.0)
+                d_pct   = _disk_pct(dnum)
+                is_hdd  = ("SSD" not in dtype.upper() and "NVMe" not in dtype.upper()
+                           and dtype not in ("N/D", "?", "Disco"))
+
+                if d_pct > 90:
+                    rec_d, rec_dk = ("CRITICO: Disco casi lleno. Liberar espacio o ampliar el almacenamiento urgentemente.", "err")
+                elif is_hdd and act_pct > 70:
+                    rec_d, rec_dk = ("Aviso: Migrar a SSD. Alta actividad en disco mecanico reduce el rendimiento y la vida util del equipo.", "warn")
+                elif dhealth == "Healthy":
+                    rec_d, rec_dk = ("Disco en buen estado. No se requiere ninguna accion.", "ok")
+                elif dhealth == "Warning":
+                    rec_d, rec_dk = ("Aviso: Advertencia en el disco. Realizar backup de datos urgentemente.", "warn")
+                elif dhealth == "Unhealthy":
+                    rec_d, rec_dk = ("CRITICO: Disco en mal estado. Reemplazar y recuperar datos de inmediato.", "err")
+                else:
+                    rec_d, rec_dk = ("Disco operativo. Monitorear periodicamente.", "ok")
+
+                f28b2    = _f(28, bold=True)
+                nm_lines = _wrap(dname[:60], f28b2, inn_w - 16)[:2] or ["(desconocido)"]
+                frd      = _f(22)
+                rld      = _wrap(rec_d, frd, inn_w - 48)
+                sub_h    = (16 + len(nm_lines)*38 + 10 + 44 + 14
+                            + 28 + 10 + 36 + 10 + 30 + 14
+                            + len(rld)*(_th("A", frd)+8) + 28 + 20)
+
+                sx0 = PAD + 16; sx1 = W - PAD - 16
+                draw.rounded_rectangle([sx0, dy, sx1, dy+sub_h], radius=14, fill=(248, 250, 252))
+
+                cy2 = dy + 16
+                for nl in nm_lines:
+                    draw.text((sx0+16, cy2), nl, font=f28b2, fill=TXT); cy2 += 38
+                cy2 += 10
+
+                type_bg = SSD_BG if ("SSD" in dtype.upper() or "NVMe" in dtype.upper()) else HDD_BG
+                fbsm    = _f(22, bold=True)
+                bb_bt   = draw.textbbox((0, 0), dtype.upper(), font=fbsm)
+                tw_bt   = bb_bt[2]-bb_bt[0]; th_bt = bb_bt[3]-bb_bt[1]
+                bpx = 14; bpy = 7
+                bx0 = sx0+16; bx1 = bx0+tw_bt+bpx*2
+                by0 = cy2;    by1 = by0+th_bt+bpy*2
+                draw.rounded_rectangle([bx0, by0, bx1, by1], radius=10, fill=type_bg)
+                draw.text((bx0+bpx, by0+bpy), dtype.upper(), font=fbsm, fill=WHITE)
+                draw.text((bx1+14, by0-2), dsize, font=_f(32, bold=True), fill=TXT)
+                cy2 = by1 + 14
+
+                bx0b = sx0+16; bx1b = sx1-16; bw = bx1b - bx0b
+                bar_clr = RED if d_pct > 90 else (AMBER if d_pct > 75 else GREEN)
+                draw.rounded_rectangle([bx0b, cy2, bx1b, cy2+28], radius=14, fill=GRAY_TR)
+                fw_ = int(bw * min(d_pct, 100) / 100)
+                if fw_ > 14:
+                    draw.rounded_rectangle([bx0b, cy2, bx0b+fw_, cy2+28], radius=14, fill=bar_clr)
+                cy2 += 38
+
+                pct_clr = RED if d_pct > 90 else (AMBER if d_pct > 75 else TXT)
+                draw.text((sx0+16, cy2), f"{d_pct:.0f}% usado", font=_f(28, bold=True), fill=pct_clr)
+                cy2 += 46
+
+                draw.text((sx0+16, cy2), f"Actividad I/O: {act_pct:.1f}%", font=_f(22), fill=LBL)
+                cy2 += 44
+
+                _rec(sx0+16, cy2, (sx1-sx0)-32, rec_d, rec_dk)
+                dy = dy + sub_h + 16
+
+            if not disk_health:
+                draw.text((PAD+28, dy+10), "No se detectaron discos físicos",
+                          font=_f(24), fill=LBL); dy += 50
+
+            if parts:
+                max_y = y + STOR_H - 20
+                needed = 32 + len(parts[:5]) * 48
+                if dy + needed < max_y:
+                    draw.text((PAD+28, dy+4), "Particiones", font=_f(20, bold=True), fill=LBL); dy += 34
+                    for _pt in parts[:5]:
+                        pclr = RED if _pt["pct"] > 90 else (AMBER if _pt["pct"] > 75 else LBL)
+                        draw.text((PAD+28, dy),
+                                  f"{_pt['mp']}   {_pt['used']} / {_pt['total']}   {_pt['pct']:.0f}%",
+                                  font=_f(22), fill=TXT)
+                        bx0p = PAD+200; bx1p = W-PAD-32; bhp = 14
+                        draw.rounded_rectangle([bx0p, dy+28, bx1p, dy+28+bhp], radius=7, fill=GRAY_TR)
+                        fwp = int((bx1p-bx0p)*min(_pt["pct"], 100)/100)
+                        if fwp > 8:
+                            draw.rounded_rectangle([bx0p, dy+28, bx0p+fwp, dy+28+bhp], radius=7, fill=pclr)
+                        dy += 48
+
+            # ── Footer ────────────────────────────────────────────────────────────
+            draw.rectangle([0, FOOT_Y, W, H], fill=FOOT_BG)
+            ftx = 36
+            try:
+                li2 = Image.open(resource_path("assets/logo.jpg")).convert("RGB")
+                l2h = 78; l2w = int(li2.width * l2h / li2.height)
+                li2 = li2.resize((l2w, l2h), Image.LANCZOS)
+                img.paste(li2, (36, FOOT_Y + (FOOT_H - l2h) // 2))
+                ftx = 36 + l2w + 20
+            except Exception:
+                pass
+            fyt = FOOT_Y + 22
+            draw.text((ftx, fyt),    "Diagnóstico realizado por PC House",
+                      font=_f(28, bold=True), fill=WHITE)
+            draw.text((ftx, fyt+42), "Reporte generado automáticamente por DiagnosticoPC v3.1",
+                      font=_f(20), fill=(180, 200, 240))
+            draw.text((ftx, fyt+78), now.strftime("Generado el %d/%m/%Y a las %H:%M"),
+                      font=_f(20), fill=(160, 185, 225))
+
+            img.save(out_path, "JPEG", quality=92, optimize=True)
+            preview = img.copy()
+            preview.thumbnail((540, 960), Image.LANCZOS)
+            buf = io.BytesIO()
+            preview.save(buf, "JPEG", quality=78)
+            b64 = _b64.b64encode(buf.getvalue()).decode()
+
+            return json.dumps({"status": "ok", "path": out_path, "preview_b64": b64})
+        except Exception as e:
+            import traceback
+            return json.dumps({"error": str(e), "trace": traceback.format_exc()})
+
+    def open_report_folder(self, path):
+        try:
+            os.startfile(path)
+            return json.dumps({"status": "ok"})
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
     @staticmethod
     def _get_programas():
         if not _HAS_WINREG:
@@ -1307,7 +1684,14 @@ html[data-theme="light"] .bay-stripe { background: rgba(255,255,255,.15); }
 .disk-row  { display: flex; justify-content: space-between; font-size: 10px; color: var(--txt2); margin-bottom: 3px; }
 .disk-name { color: var(--txt); font-weight: 600; font-family: var(--font-mono); }
 
-/* ── Service form ── */
+/* ── Diagnóstico actions ── */
+.diag-actions { display: flex; align-items: center; gap: 10px; padding: 0 20px 10px; flex-shrink: 0; }
+#repPreview {
+  width: 100%; height: 100%; object-fit: contain;
+  padding: 12px; box-sizing: border-box; border-radius: var(--radius);
+  cursor: zoom-in;
+}
+/* ── Service form (kept for compat) ── */
 .svc { display: flex; align-items: flex-end; gap: 10px; padding: 0 20px 10px; flex-shrink: 0; }
 .fg  { display: flex; flex-direction: column; gap: 3px; }
 .fg label { font-size: 10px; font-weight: 500; color: var(--txt-on-bg); opacity: .68; letter-spacing: .2px; }
@@ -1675,36 +2059,26 @@ html[data-theme="dark"] .status-pill.crit { background:rgba(239,68,68,.15); }
   </div>
 </div>
 
-<div class="svc">
-  <div class="fg">
-    <label>Cliente</label>
-    <input type="text" id="iCliente" placeholder="Nombre del cliente">
-  </div>
-  <div class="fg">
-    <label>Orden N&deg;</label>
-    <input type="text" id="iOrden" placeholder="N&deg; de orden">
-  </div>
-  <button class="btn btn-p" id="btnGen" onclick="doGenerate()">Generar Reporte</button>
-  <button class="btn btn-s" id="btnExp" onclick="doExport()" disabled>Exportar PDF</button>
-</div>
-
 <div class="section-label">DIAGN&Oacute;STICO</div>
+<div class="diag-actions">
+  <button class="btn btn-p" id="btnGenVisual" onclick="doGenVisual()">&#x1F4CA; Generar Reporte Visual</button>
+  <button class="btn btn-s" id="btnOpenFolder" onclick="doOpenFolder()" style="display:none">&#x1F5BC;&#xFE0F; Abrir Reporte</button>
+</div>
 <div class="rep-wrap">
-  <div class="rep-lbl">Reporte de diagn&oacute;stico</div>
   <div class="rep-body">
     <div id="emptyState" class="empty-state">
       <img id="mascotMain" src="" alt="">
       <p class="empty-title">Listo para diagnosticar</p>
-      <p class="empty-sub">Complete los datos del cliente y presione Generar Reporte</p>
+      <p class="empty-sub">Presion&aacute; &#x1F4CA; Generar Reporte Visual para crear la imagen</p>
     </div>
-    <div id="repText" style="display:none"></div>
+    <img id="repPreview" style="display:none" alt="Vista previa del reporte">
   </div>
 </div>
 
 <div class="sbar">
   <div class="spin" id="spin"></div>
   <div class="dot" id="dot"></div>
-  <span id="sMsg">Listo &mdash; complete los campos y presione Generar Reporte</span>
+  <span id="sMsg">Listo &mdash; presion&aacute; Generar Reporte Visual para comenzar</span>
 </div>
 
 <div id="diskModal" class="modal-ov" onclick="closeModalOv(event)">
@@ -1900,7 +2274,7 @@ updateThemeIcon(document.documentElement.getAttribute('data-theme') || 'light');
 const cpuHist = new Array(60).fill(0);
 let _cpuDisp   = new Array(60).fill(0);
 let _cpuAnim   = null;
-let reportReady = false, lastReport = '';
+let reportReady = false, lastReport = '', lastReportPath = null;
 
 function tickClock() {
   const n = new Date();
@@ -2122,44 +2496,37 @@ function renderDisks(disks) {
   }).join('');
 }
 
-function showReport(text) {
+function doGenVisual() {
+  if (!window.pywebview||!window.pywebview.api) return;
+  document.getElementById('btnGenVisual').disabled = true;
+  document.getElementById('btnOpenFolder').style.display = 'none';
   document.getElementById('emptyState').style.display = 'none';
-  const rt = document.getElementById('repText');
-  rt.style.display = 'block'; rt.textContent = text;
-}
-
-function doGenerate() {
-  const cliente = document.getElementById('iCliente').value.trim();
-  const orden   = document.getElementById('iOrden').value.trim();
-  document.getElementById('btnGen').disabled = true;
-  document.getElementById('btnExp').disabled = true;
-  showReport('Recopilando información del sistema…');
-  setStatus('Ejecutando diagnóstico…', 'busy');
-  window.pywebview.api.generate_report(cliente, orden).then(raw => {
+  document.getElementById('repPreview').style.display  = 'none';
+  setStatus('Generando imagen del reporte…', 'busy');
+  window.pywebview.api.generate_visual_report().then(raw => {
     const d = JSON.parse(raw);
-    if (d.error) { showReport('Error: '+d.error); setStatus('Error al generar el reporte','err'); }
-    else {
-      showReport(d.report); lastReport=d.report; reportReady=true;
-      renderDisks(d.disks); setStatus('Reporte generado correctamente','ok');
-      document.getElementById('btnExp').disabled = false;
+    if (d.error) {
+      setStatus('Error al generar: ' + d.error, 'err');
+      document.getElementById('emptyState').style.display = 'flex';
+    } else {
+      const prev = document.getElementById('repPreview');
+      prev.src = 'data:image/jpeg;base64,' + d.preview_b64;
+      prev.style.display = 'block';
+      lastReportPath = d.path;
+      document.getElementById('btnOpenFolder').style.display = 'inline-block';
+      setStatus('Reporte guardado en: ' + d.path, 'ok');
     }
-    document.getElementById('btnGen').disabled = false;
-  }).catch(()=>{showReport('Error inesperado.');setStatus('Error','err');document.getElementById('btnGen').disabled=false;});
+    document.getElementById('btnGenVisual').disabled = false;
+  }).catch(()=>{
+    setStatus('Error inesperado al generar el reporte', 'err');
+    document.getElementById('emptyState').style.display = 'flex';
+    document.getElementById('btnGenVisual').disabled = false;
+  });
 }
 
-function doExport() {
-  if (!reportReady) return;
-  const cliente = document.getElementById('iCliente').value.trim();
-  const orden   = document.getElementById('iOrden').value.trim();
-  document.getElementById('btnExp').disabled = true;
-  setStatus('Generando PDF…','busy');
-  window.pywebview.api.export_pdf(cliente,orden,lastReport).then(raw=>{
-    const d=JSON.parse(raw);
-    if (d.status==='ok') setStatus('PDF guardado: '+d.path,'ok');
-    else if (d.status==='cancel') setStatus('Exportación cancelada','');
-    else setStatus('Error al exportar PDF: '+(d.error||''),'err');
-    document.getElementById('btnExp').disabled=false;
-  }).catch(()=>{setStatus('Error al exportar','err');document.getElementById('btnExp').disabled=false;});
+function doOpenFolder() {
+  if (!lastReportPath||!window.pywebview||!window.pywebview.api) return;
+  window.pywebview.api.open_report_folder(lastReportPath).catch(()=>{});
 }
 
 window.addEventListener('pywebviewready', function() {
