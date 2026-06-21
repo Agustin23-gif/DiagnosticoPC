@@ -122,6 +122,7 @@ class Api:
 
     def __init__(self):
         self._cpu_value     = 0.0
+        self._disk_activity = {}
         self._cpu_history   = [0.0] * 60
         self._lock          = threading.Lock()
         self._cpu_model = Api._get_cpu_name()
@@ -135,8 +136,8 @@ class Api:
         self._wh_lines     = []
         self._wh_done      = True
         self._wh_rc        = 0
-        t = threading.Thread(target=self._cpu_monitor_thread, daemon=True)
-        t.start()
+        threading.Thread(target=self._cpu_monitor_thread,  daemon=True).start()
+        threading.Thread(target=self._disk_monitor_thread, daemon=True).start()
 
     def _cpu_monitor_thread(self):
         import time
@@ -156,6 +157,30 @@ class Api:
                 v = psutil.cpu_percent(interval=1)
                 with self._lock:
                     self._cpu_value = v
+
+    def _disk_monitor_thread(self):
+        import time
+        while True:
+            try:
+                before = psutil.disk_io_counters(perdisk=True)
+                time.sleep(1)
+                after = psutil.disk_io_counters(perdisk=True)
+                activity = {}
+                for disk in after:
+                    if disk in before:
+                        rb = after[disk].read_bytes - before[disk].read_bytes
+                        wb = after[disk].write_bytes - before[disk].write_bytes
+                        total_mb = (rb + wb) / (1024 * 1024)
+                        pct = min(100.0, total_mb / 5.0)  # 500 MB/s = 100 %
+                        activity[disk] = round(pct, 1)
+                with self._lock:
+                    self._disk_activity = activity
+            except Exception:
+                time.sleep(1)
+
+    def get_disk_activity(self):
+        with self._lock:
+            return json.dumps(self._disk_activity)
 
     def get_metrics(self):
         with self._lock:
@@ -256,10 +281,15 @@ class Api:
     @staticmethod
     def _run_smartctl(disk_num):
         device   = f"\\\\.\\PhysicalDrive{disk_num}"
-        bundled  = resource_path("tools/smartmontools/smartctl.exe")
-        exe_list = []
-        if os.path.exists(bundled):
-            exe_list.append(bundled)
+        candidates = []
+        rel = os.path.join("tools", "smartmontools", "smartctl.exe")
+        if getattr(sys, 'frozen', False):
+            candidates.append(os.path.join(os.path.dirname(sys.executable), rel))
+            if hasattr(sys, '_MEIPASS'):
+                candidates.append(os.path.join(sys._MEIPASS, rel))
+        else:
+            candidates.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), rel))
+        exe_list = [c for c in candidates if os.path.exists(c)]
         exe_list += ["smartctl", r"C:\Program Files\smartmontools\bin\smartctl.exe"]
 
         # Volume letters work without admin for ATA/SATA; PhysicalDrive needs admin
@@ -1224,6 +1254,19 @@ html[data-theme="light"] .bay-stripe { background: rgba(255,255,255,.15); }
 .bay-dot.warn { background: #F59E0B; box-shadow: 0 0 6px rgba(245,158,11,.8); }
 .bay-dot.bad  { background: #EF4444; box-shadow: 0 0 6px rgba(239,68,68,.8); }
 .bay-dot.unk  { background: rgba(255,255,255,.3); }
+.bay-act-bar-wrap {
+  width: 4px; height: 52px; border-radius: 99px;
+  background: rgba(255,255,255,.08); display: flex;
+  align-items: flex-end; overflow: hidden; flex-shrink: 0;
+}
+.bay-act-bar-fill {
+  width: 100%; border-radius: 99px;
+  transition: height .8s ease, background-color .5s;
+}
+.bay-act-pct {
+  font-family: var(--font-mono); font-size: 8px;
+  color: rgba(255,255,255,.55); text-align: center; margin-top: 3px; letter-spacing: -.2px;
+}
 
 /* ── Partition bars (after report) ── */
 .disk-partitions { border-top: 1px solid var(--card-bd); margin-top: 8px; padding-top: 6px; }
@@ -1978,10 +2021,30 @@ function pollMetrics() {
 }
 setInterval(pollMetrics, 2000);
 
+function pollDiskActivity() {
+  if (!window.pywebview||!window.pywebview.api) return;
+  window.pywebview.api.get_disk_activity().then(raw => {
+    const act = JSON.parse(raw);
+    document.querySelectorAll('.bay[data-disk-num]').forEach(bay => {
+      const num = bay.dataset.diskNum;
+      const key = 'PhysicalDrive' + num;
+      const pct = act[key] !== undefined ? act[key] : 0;
+      const fill  = document.getElementById('bay-act-' + num);
+      const label = document.getElementById('bay-pct-' + num);
+      if (fill) {
+        fill.style.height = pct + '%';
+        fill.style.background = pct >= 80 ? '#EF4444' : pct >= 50 ? '#F59E0B' : '#10B981';
+      }
+      if (label) label.textContent = Math.round(pct) + '%';
+    });
+  }).catch(()=>{});
+}
+setInterval(pollDiskActivity, 1000);
+
 function renderDiskHealth(disks) {
   const el = document.getElementById('diskHealth');
   if (!disks||!disks.length){el.innerHTML='<div class="disk-loading">No se detectaron unidades. Verificá los permisos del programa.</div>';return;}
-  const bays = disks.map(d => {
+  const bays = disks.map((d,i) => {
     const dotCls =
       d.health==='Healthy'   ? 'good' :
       d.health==='Warning'   ? 'warn' :
@@ -1991,17 +2054,24 @@ function renderDiskHealth(disks) {
       d.health==='Warning'   ? 'En Riesgo':
       d.health==='Unhealthy' ? 'Dañado'   : (d.health||'N/D');
     const esc = s => String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;');
+    const dnum = (d.disk_num!==undefined&&d.disk_num!==''&&d.disk_num!==null) ? String(d.disk_num) : String(i);
     return `<div class="bay"
   title="${esc(d.name)}"
   data-disk-name="${esc(d.name)}"
   data-disk-type="${esc(d.type)}"
   data-disk-health="${esc(d.health)}"
   data-disk-size="${esc(d.size)}"
+  data-disk-num="${esc(dnum)}"
   onclick="openDiskModal(this.dataset.diskName,this.dataset.diskType,this.dataset.diskHealth,this.dataset.diskSize)">
-  <div class="bay-body"><div class="bay-stripe"></div><div class="bay-stripe"></div></div>
+  <div class="bay-body">
+    <div class="bay-stripe"></div>
+    <div class="bay-act-bar-wrap"><div class="bay-act-bar-fill" id="bay-act-${esc(dnum)}" style="height:0%;background:#10B981"></div></div>
+    <div class="bay-stripe"></div>
+  </div>
   <div class="bay-grid">&#x2807;&#x2807;</div>
   <div class="bay-size">${d.size}</div>
   <div class="bay-type">${d.type}</div>
+  <div class="bay-act-pct" id="bay-pct-${esc(dnum)}">—%</div>
   <div class="bay-dot ${dotCls}"></div>
 </div>`;
   }).join('');
