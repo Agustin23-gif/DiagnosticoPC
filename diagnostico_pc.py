@@ -248,7 +248,9 @@ class Api:
                     disk_size   = d.get("size",   "N/D")
                     break
         smart_raw  = Api._run_smartctl(str(disk_num)) if disk_num not in (None, "") else None
-        smart_info = Api._parse_smart(smart_raw) if smart_raw else None
+        scsi_only  = bool(smart_raw and smart_raw.get('_scsi_only'))
+        smart_info = Api._parse_smart(smart_raw) if smart_raw and not scsi_only else None
+        scsi_info  = Api._parse_scsi_basic(smart_raw) if scsi_only else None
         partitions = Api._get_disk_partitions(disk_num)
         return {
             "name":            disk_name or "—",
@@ -257,6 +259,7 @@ class Api:
             "size":            disk_size  or "N/D",
             "smart_available": smart_info is not None,
             "smart":           smart_info,
+            "scsi_info":       scsi_info,
             "partitions":      partitions,
         }
 
@@ -356,6 +359,24 @@ class Api:
 
             break  # found a valid exe; tried all device paths; stop
 
+        # SCSI fallback — get basic device info when SMART isn't accessible
+        for exe in exe_list:
+            try:
+                dev_letter = chr(ord('a') + int(disk_num)) if str(disk_num).isdigit() else 'a'
+                r = subprocess.run(
+                    [exe, '-d', 'scsi', '-a', '-j', f'/dev/sd{dev_letter}'],
+                    capture_output=True, text=True, timeout=15, **_NWIN,
+                )
+                txt = r.stdout.strip()
+                if txt:
+                    data = json.loads(txt)
+                    if data.get('model_name') or data.get('scsi_product') or data.get('scsi_vendor'):
+                        data['_scsi_only'] = True
+                        return data
+            except Exception:
+                pass
+            break  # only try first valid exe
+
         return None
 
     @staticmethod
@@ -401,6 +422,18 @@ class Api:
                 except:
                     pass
             return s
+        except Exception:
+            return None
+
+    @staticmethod
+    def _parse_scsi_basic(raw):
+        try:
+            return {
+                "model":          raw.get("model_name") or raw.get("scsi_product") or "",
+                "serial":         raw.get("serial_number") or "",
+                "capacity_bytes": (raw.get("user_capacity") or {}).get("bytes"),
+                "rotation_rate":  raw.get("rotation_rate"),
+            }
         except Exception:
             return None
 
@@ -2201,6 +2234,7 @@ function _donut(pct, main, sub, color, label) {
 function _renderModalDetail(data) {
   const health=data.health||'N/D';
   const smart=data.smart||null;
+  const scsi=data.scsi_info||null;
   let donuts='', blocks=[], parts='';
 
   if (smart) {
@@ -2232,6 +2266,10 @@ function _renderModalDetail(data) {
     if (smart.percentage_used!=null) blocks.push({v:`${smart.percentage_used}%`, l:'Desgaste acum.'});
     if (smart.serial) blocks.push({v:smart.serial, l:'Número de serie', small:true});
   }
+  if (!smart && scsi) {
+    if (scsi.model)  blocks.push({v:scsi.model,  l:'Modelo', small:true});
+    if (scsi.serial) blocks.push({v:scsi.serial, l:'Número de serie', small:true});
+  }
   blocks.push({v:data.type||'—', l:'Tipo'});
   blocks.push({v:data.size||'—', l:'Capacidad', small:true});
 
@@ -2253,7 +2291,9 @@ function _renderModalDetail(data) {
   }
 
   const note=!data.smart_available
-    ?`<div class="modal-smart-note">Datos SMART detallados no disponibles en este equipo<br><small>Instale <b>smartmontools</b> y ejecútelo con privilegios para ver temperatura, horas de uso y estado avanzado</small></div>`
+    ?(scsi
+      ?`<div class="modal-smart-note"><small>ℹ️ Datos SMART no disponibles en este controlador</small></div>`
+      :`<div class="modal-smart-note">Datos SMART detallados no disponibles en este equipo<br><small>Instale <b>smartmontools</b> y ejecútelo con privilegios para ver temperatura, horas de uso y estado avanzado</small></div>`)
     :'';
 
   document.getElementById('modalContent').innerHTML=`
