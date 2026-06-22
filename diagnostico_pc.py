@@ -1466,12 +1466,46 @@ class Api:
 
     # ── Limpiar Sistema ───────────────────────────────────────────────────
     def analyze_cleanup(self):
-        import threading as _thr
-        if getattr(self, '_clean_thread', None) and self._clean_thread.is_alive():
-            return json.dumps({"error": "Análisis ya en curso"})
-        self._clean_thread = _thr.Thread(target=self._analyze_cleanup_worker, daemon=True)
-        self._clean_thread.start()
-        return json.dumps({"ok": True})
+        try:
+            result = {}
+
+            temp_user = os.environ.get("TEMP", "")
+            size = 0
+            if temp_user and os.path.exists(temp_user):
+                for dp, dn, fn in os.walk(temp_user):
+                    for f in fn:
+                        try: size += os.path.getsize(os.path.join(dp, f))
+                        except Exception: pass
+            result["temp_user"] = size
+
+            size = 0
+            win_temp = r"C:\Windows\Temp"
+            if os.path.exists(win_temp):
+                for dp, dn, fn in os.walk(win_temp):
+                    for f in fn:
+                        try: size += os.path.getsize(os.path.join(dp, f))
+                        except Exception: pass
+            result["temp_win"] = size
+
+            size = 0
+            try:
+                r = subprocess.run(
+                    ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                     "$shell = New-Object -ComObject Shell.Application; "
+                     "$rb = $shell.Namespace(0xA); "
+                     "($rb.Items() | Measure-Object -Property Size -Sum).Sum"],
+                    capture_output=True, text=True, timeout=10, **_NWIN
+                )
+                if r.returncode == 0 and r.stdout.strip():
+                    size = int(float(r.stdout.strip()))
+            except Exception:
+                pass
+            result["recycle"] = size
+
+            result["total"] = result["temp_user"] + result["temp_win"] + result["recycle"]
+            return json.dumps(result)
+        except Exception as e:
+            return json.dumps({"error": str(e), "temp_user": 0, "temp_win": 0, "recycle": 0, "total": 0})
 
     def run_cleanup(self):
         import os as _os, shutil as _sh
@@ -2860,6 +2894,12 @@ html[data-theme="light"] .clean-done-wrap { background:rgba(34,197,94,.06); bord
 .clean-done-icon  { font-size:36px; margin-bottom:8px; }
 .clean-done-title { font-size:16px; font-weight:700; color:var(--txt); margin-bottom:4px; }
 .clean-done-freed { font-size:13px; color:var(--txt2); }
+
+/* ── Fix pointer-events cleanModal (EdgeWebView2) ─────── */
+#cleanModal.open                { pointer-events: none; }
+#cleanModal .chk-modal-card     { pointer-events: auto !important; position: relative; z-index: 600; }
+#cleanModal .btn,
+#cleanModal .modal-x            { position: relative; z-index: 99999; pointer-events: auto !important; }
 </style>
 </head>
 <body>
@@ -3190,7 +3230,7 @@ html[data-theme="light"] .clean-done-wrap { background:rgba(34,197,94,.06); bord
   </div>
 </div>
 
-<div id="cleanModal" class="modal-ov" onclick="closeCleanOv(event)">
+<div id="cleanModal" class="modal-ov">
   <div class="chk-modal-card" style="max-width:460px">
     <button class="modal-x" onclick="closeCleanModal()">&#x2715;</button>
     <div style="font-size:16px;font-weight:700;margin-bottom:4px;color:var(--txt)">&#x1F9F9; Limpiar Sistema</div>
@@ -4316,93 +4356,76 @@ function netOnDone(data) {
 }
 
 // ── Limpiar Sistema ──────────────────────────────────────────────────────
-var _cleanCats = [];
+function _fmtCleanBytes(b) {
+  b = b || 0;
+  var u = ['B','KB','MB','GB','TB'], i = 0;
+  while (b >= 1024 && i < u.length - 1) { b /= 1024; i++; }
+  return b.toFixed(1) + ' ' + u[i];
+}
 
 function limpiarSistema() {
-  // Resetear estado
-  _cleanCats = [];
-  document.getElementById('cleanAnalyzeBody').innerHTML = '<div class="modal-loading">&#x1F50D; Analizando sistema&hellip;</div>';
-  document.getElementById('cleanTotalRow').style.display    = 'none';
-  document.getElementById('cleanTotalVal').textContent      = '—';
-  document.getElementById('cleanLimpiarBtn').style.display  = 'none';
-  document.getElementById('cleanLimpiarBtn').disabled       = false;
-  document.getElementById('cleanLimpiarBtn').innerHTML      = '&#x1F9F9; Limpiar Ahora';
-  document.getElementById('cleanResultEl').style.display    = 'none';
-  document.getElementById('cleanResultEl').innerHTML        = '';
-  document.getElementById('cleanCerrarBtn').style.display   = 'none';
-  // Abrir modal y lanzar análisis
+  // 1. Reset completo del modal
+  document.getElementById('cleanAnalyzeBody').innerHTML    = '<div class="modal-loading">&#x1F50D; Analizando sistema&hellip;</div>';
+  document.getElementById('cleanTotalRow').style.display   = 'none';
+  document.getElementById('cleanTotalVal').textContent     = '—';
+  document.getElementById('cleanLimpiarBtn').style.display = 'none';
+  document.getElementById('cleanLimpiarBtn').disabled      = false;
+  document.getElementById('cleanLimpiarBtn').innerHTML     = '&#x1F9F9; Limpiar Ahora';
+  document.getElementById('cleanResultEl').style.display   = 'none';
+  document.getElementById('cleanResultEl').innerHTML       = '';
+  document.getElementById('cleanCerrarBtn').style.display  = 'none';
+  // 2. Abrir modal
   document.getElementById('cleanModal').classList.add('open');
-  if (window.pywebview && window.pywebview.api) {
-    window.pywebview.api.analyze_cleanup();
-  }
+  // 3. Llamar analyze_cleanup y manejar resultado en .then()
+  if (!window.pywebview || !window.pywebview.api) { return; }
+  window.pywebview.api.analyze_cleanup().then(function(raw) {
+    var d;
+    try { d = JSON.parse(raw); } catch(e) { d = {error: 'Error al parsear respuesta'}; }
+    if (d.error) {
+      document.getElementById('cleanAnalyzeBody').innerHTML =
+        '<div class="modal-loading" style="color:var(--error)">&#x26A0;&#xFE0F; ' + d.error + '</div>';
+      return;
+    }
+    var html = '';
+    html += '<div class="clean-cat-row"><span class="clean-cat-icon">&#x1F5C2;</span><span class="clean-cat-lbl">Temporales del usuario (%TEMP%)</span><span class="clean-cat-size">' + _fmtCleanBytes(d.temp_user) + '</span></div>';
+    html += '<div class="clean-cat-row"><span class="clean-cat-icon">&#x1F5C2;</span><span class="clean-cat-lbl">Temporales de Windows</span><span class="clean-cat-size">'                + _fmtCleanBytes(d.temp_win)  + '</span></div>';
+    html += '<div class="clean-cat-row"><span class="clean-cat-icon">&#x1F5D1;</span><span class="clean-cat-lbl">Papelera de reciclaje</span><span class="clean-cat-size">'               + _fmtCleanBytes(d.recycle)   + '</span></div>';
+    document.getElementById('cleanAnalyzeBody').innerHTML    = html;
+    document.getElementById('cleanTotalVal').textContent     = _fmtCleanBytes(d.total || 0);
+    document.getElementById('cleanTotalRow').style.display   = '';
+    document.getElementById('cleanLimpiarBtn').style.display = '';
+  });
 }
 
 function closeCleanModal() {
   document.getElementById('cleanModal').classList.remove('open');
 }
 
-function closeCleanOv(e) {
-  if (e.target === document.getElementById('cleanModal')) {
-    closeCleanModal();
-  }
-}
-
-function cleanOnCategoryResult(data) {
-  _cleanCats.push(data);
-  document.getElementById('cleanAnalyzeBody').innerHTML = _cleanCats.map(function(c) {
-    return '<div class="clean-cat-row">'
-         + '<span class="clean-cat-icon">' + c.icon + '</span>'
-         + '<span class="clean-cat-lbl">'  + c.label + '</span>'
-         + '<span class="clean-cat-size">' + c.size  + '</span>'
-         + '</div>';
-  }).join('');
-}
-
-function cleanOnAnalysisDone(data) {
-  if (data.error) {
-    document.getElementById('cleanAnalyzeBody').innerHTML =
-      '<div class="modal-loading" style="color:var(--error)">&#x26A0;&#xFE0F; Error: ' + data.error + '</div>';
-    return;
-  }
-  // Renderizar filas de categorías
-  document.getElementById('cleanAnalyzeBody').innerHTML = (data.categories || []).map(function(c) {
-    return '<div class="clean-cat-row">'
-         + '<span class="clean-cat-icon">' + c.icon  + '</span>'
-         + '<span class="clean-cat-lbl">'  + c.label + '</span>'
-         + '<span class="clean-cat-size">' + c.size  + '</span>'
-         + '</div>';
-  }).join('');
-  // Mostrar total
-  document.getElementById('cleanTotalVal').textContent   = data.total || '—';
-  document.getElementById('cleanTotalRow').style.display = '';
-  // Mostrar botón Limpiar Ahora
-  document.getElementById('cleanLimpiarBtn').style.display = '';
-}
-
 function ejecutarLimpieza() {
   var btn = document.getElementById('cleanLimpiarBtn');
   btn.disabled  = true;
-  btn.innerHTML = 'Limpiando…';
+  btn.innerHTML = 'Limpiando&hellip;';
   if (!window.pywebview || !window.pywebview.api) { return; }
   window.pywebview.api.run_cleanup().then(function(raw) {
     var d;
     try { d = JSON.parse(raw); } catch(e) { d = {}; }
     var res = document.getElementById('cleanResultEl');
     if (d.error) {
-      res.innerHTML      = '<div style="color:var(--error);font-size:13px">&#x26A0;&#xFE0F; ' + d.error + '</div>';
-      res.style.display  = '';
-      btn.disabled       = false;
-      btn.innerHTML      = '&#x1F9F9; Limpiar Ahora';
+      res.innerHTML     = '<div style="color:var(--error);font-size:13px">&#x26A0;&#xFE0F; ' + d.error + '</div>';
+      res.style.display = '';
+      btn.disabled      = false;
+      btn.innerHTML     = '&#x1F9F9; Limpiar Ahora';
       return;
     }
+    var freed = d.freed_fmt || _fmtCleanBytes(d.freed || 0);
     res.innerHTML = '<div class="clean-done-wrap">'
                   + '<div class="clean-done-icon">&#x2705;</div>'
                   + '<div class="clean-done-title">Limpieza completada</div>'
-                  + '<div class="clean-done-freed">Se liberaron <b>' + (d.freed_fmt || '—') + '</b></div>'
+                  + '<div class="clean-done-freed">Se liberaron <b>' + freed + '</b></div>'
                   + '</div>';
-    res.style.display                                         = '';
-    btn.style.display                                         = 'none';
-    document.getElementById('cleanCerrarBtn').style.display  = '';
+    res.style.display                                        = '';
+    btn.style.display                                        = 'none';
+    document.getElementById('cleanCerrarBtn').style.display = '';
   });
 }
 
