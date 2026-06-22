@@ -182,6 +182,46 @@ class Api:
         with self._lock:
             return json.dumps(self._disk_activity)
 
+    def get_system_info(self):
+        try:
+            result = {}
+            r = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                 "Get-WmiObject Win32_BaseBoard | Select-Object Manufacturer,Product | ConvertTo-Json -Compress"],
+                capture_output=True, text=True, timeout=10, **_NWIN)
+            if r.returncode == 0 and r.stdout.strip():
+                result["motherboard"] = json.loads(r.stdout.strip())
+            r = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                 "Get-WmiObject Win32_BIOS | Select-Object SMBIOSBIOSVersion,ReleaseDate | ConvertTo-Json -Compress"],
+                capture_output=True, text=True, timeout=10, **_NWIN)
+            if r.returncode == 0 and r.stdout.strip():
+                result["bios"] = json.loads(r.stdout.strip())
+            r = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                 "Get-WmiObject Win32_VideoController | Select-Object Name,AdapterRAM,CurrentHorizontalResolution,CurrentVerticalResolution | ConvertTo-Json -Compress"],
+                capture_output=True, text=True, timeout=10, **_NWIN)
+            if r.returncode == 0 and r.stdout.strip():
+                raw = json.loads(r.stdout.strip())
+                result["gpu"] = [raw] if isinstance(raw, dict) else raw
+            r = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                 "Get-WmiObject Win32_OperatingSystem | Select-Object Caption,BuildNumber,OSArchitecture | ConvertTo-Json -Compress"],
+                capture_output=True, text=True, timeout=10, **_NWIN)
+            if r.returncode == 0 and r.stdout.strip():
+                result["os"] = json.loads(r.stdout.strip())
+            try:
+                r = subprocess.run(
+                    ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                     "$p = Get-WmiObject SoftwareLicensingProduct | Where-Object {$_.Name -like '*Windows*' -and $_.PartialProductKey}; if($p) { $p[0].LicenseStatus } else { 0 }"],
+                    capture_output=True, text=True, timeout=10, **_NWIN)
+                result["activation"] = "Activado ✅" if r.stdout.strip() == "1" else "No activado ❌"
+            except Exception:
+                result["activation"] = "N/D"
+            return json.dumps(result)
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
     def get_metrics(self):
         with self._lock:
             cpu = self._cpu_value
@@ -2166,6 +2206,21 @@ html[data-theme="dark"] .theme-btn { border-color: var(--card-bd); background: v
 .theme-btn:hover  { opacity: .8; transform: scale(1.06); }
 .theme-btn:active { transform: scale(0.94); }
 .theme-btn svg { display: block; }
+.btn-hdr-adn {
+  background: rgba(255,255,255,0.12);
+  border: 1px solid rgba(255,255,255,0.30);
+  color: #ffffff;
+  border-radius: 8px;
+  padding: 4px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: 'Plus Jakarta Sans', sans-serif;
+  cursor: pointer;
+  transition: background 0.2s ease;
+  flex-shrink: 0;
+  margin-left: 4px;
+}
+.btn-hdr-adn:hover { background: rgba(255,255,255,0.22); }
 
 /* ── Metrics grid ── */
 .metrics {
@@ -2633,6 +2688,7 @@ html[data-theme="light"] .net-sum-stat { background:rgba(255,255,255,.6); }
     <div class="hdr-host" id="host">—</div>
     <div class="hdr-clock" id="clock">—</div>
   </div>
+  <button class="btn-hdr-adn" onclick="abrirModalADN()">&#x1F9EC; ADN del Equipo</button>
   <button class="theme-btn" id="themeBtn" onclick="toggleTheme()" title="Cambiar tema">
     <span id="themeIcon"></span>
   </button>
@@ -2945,6 +3001,15 @@ html[data-theme="light"] .net-sum-stat { background:rgba(255,255,255,.6); }
     <div id="netRepeatSection" style="display:none;margin-top:12px">
       <button class="btn btn-s" style="width:100%;padding:10px;border-radius:10px" onclick="startNetTest()">&#x1F504; Repetir Test</button>
     </div>
+  </div>
+</div>
+
+<div id="adnModal" class="modal-ov" onclick="cerrarModalADNOv(event)">
+  <div class="chk-modal-card" style="max-width:520px">
+    <button class="modal-x" onclick="cerrarModalADN()">&#x2715;</button>
+    <div style="font-size:16px;font-weight:700;margin-bottom:4px;color:var(--txt)">&#x1F9EC; ADN del Equipo</div>
+    <div style="font-size:12px;color:var(--txt2);margin-bottom:16px">Informaci&oacute;n t&eacute;cnica detallada del sistema</div>
+    <div id="adnBody"><div class="modal-loading">&#x1F50D; Leyendo ADN del sistema&hellip;</div></div>
   </div>
 </div>
 
@@ -4033,6 +4098,78 @@ function netOnDone(data) {
     + '<div class="net-sum-stat"><div class="net-sum-sv" style="color:' + jC + '">' + (jitter != null ? jitter + ' ms' : '—') + '</div><div class="net-sum-sl">Jitter</div></div>'
     + '</div>'
     + '</div>';
+}
+
+// ── ADN del Equipo modal ──────────────────────────────────────────────────────
+function _adnFmtBiosDate(raw) {
+  if (!raw) return 'N/D';
+  var m = String(raw).match(/^(\\d{4})(\\d{2})(\\d{2})/);
+  if (!m) return String(raw).substring(0, 10);
+  return m[3] + '/' + m[2] + '/' + m[1];
+}
+function _adnFmtVRAM(bytes) {
+  if (!bytes || bytes <= 0) return 'Compartida (integrada)';
+  var gb = bytes / 1073741824;
+  return gb >= 1 ? gb.toFixed(1) + ' GB' : (bytes / 1048576).toFixed(0) + ' MB';
+}
+function abrirModalADN() {
+  document.getElementById('adnBody').innerHTML = '<div class="modal-loading">&#x1F50D; Leyendo ADN del sistema&hellip;</div>';
+  document.getElementById('adnModal').classList.add('open');
+  if (!window.pywebview || !window.pywebview.api) return;
+  window.pywebview.api.get_system_info().then(function(raw) {
+    try {
+      var d = JSON.parse(raw);
+      if (d.error) {
+        document.getElementById('adnBody').innerHTML = '<div class="modal-loading">&#x26A0;&#xFE0F; Error: ' + d.error + '</div>';
+        return;
+      }
+      var mb = d.motherboard || {};
+      var bios = d.bios || {};
+      var gpus = d.gpu || [];
+      var os = d.os || {};
+      var h = '';
+      h += '<div style="font-size:11px;font-weight:600;letter-spacing:.5px;text-transform:uppercase;color:var(--txt2);margin-bottom:8px">&#x1F5A5;&#xFE0F; Placa Madre</div>';
+      h += '<div class="net-info-grid" style="margin-bottom:16px">';
+      h += '<div class="net-info-item"><div class="net-info-lbl">Fabricante</div><div class="net-info-val">' + (mb.Manufacturer || 'N/D') + '</div></div>';
+      h += '<div class="net-info-item"><div class="net-info-lbl">Modelo</div><div class="net-info-val">' + (mb.Product || 'N/D') + '</div></div>';
+      h += '<div class="net-info-item"><div class="net-info-lbl">BIOS</div><div class="net-info-val">' + (bios.SMBIOSBIOSVersion || 'N/D') + '</div></div>';
+      h += '<div class="net-info-item"><div class="net-info-lbl">Fecha BIOS</div><div class="net-info-val">' + _adnFmtBiosDate(bios.ReleaseDate) + '</div></div>';
+      h += '</div>';
+      h += '<div style="font-size:11px;font-weight:600;letter-spacing:.5px;text-transform:uppercase;color:var(--txt2);margin-bottom:8px">&#x1F3AE; Tarjeta de Video</div>';
+      if (gpus.length === 0) {
+        h += '<div class="net-info-grid" style="margin-bottom:16px"><div class="net-info-item" style="grid-column:1/-1"><div class="net-info-val">N/D</div></div></div>';
+      } else {
+        for (var i = 0; i < gpus.length; i++) {
+          var g = gpus[i];
+          var resol = (g.CurrentHorizontalResolution && g.CurrentVerticalResolution) ? g.CurrentHorizontalResolution + ' \xd7 ' + g.CurrentVerticalResolution : 'N/D';
+          h += '<div class="net-info-grid" style="margin-bottom:' + (i < gpus.length - 1 ? '8' : '16') + 'px">';
+          h += '<div class="net-info-item" style="grid-column:1/-1"><div class="net-info-lbl">Nombre</div><div class="net-info-val">' + (g.Name || 'N/D') + '</div></div>';
+          h += '<div class="net-info-item"><div class="net-info-lbl">VRAM</div><div class="net-info-val">' + _adnFmtVRAM(g.AdapterRAM) + '</div></div>';
+          h += '<div class="net-info-item"><div class="net-info-lbl">Resoluci\xf3n</div><div class="net-info-val">' + resol + '</div></div>';
+          h += '</div>';
+        }
+      }
+      h += '<div style="font-size:11px;font-weight:600;letter-spacing:.5px;text-transform:uppercase;color:var(--txt2);margin-bottom:8px">&#x1F4BF; Sistema Operativo</div>';
+      h += '<div class="net-info-grid">';
+      h += '<div class="net-info-item" style="grid-column:1/-1"><div class="net-info-lbl">Sistema</div><div class="net-info-val">' + (os.Caption || 'N/D') + '</div></div>';
+      h += '<div class="net-info-item"><div class="net-info-lbl">Build</div><div class="net-info-val">' + (os.BuildNumber || 'N/D') + '</div></div>';
+      h += '<div class="net-info-item"><div class="net-info-lbl">Arquitectura</div><div class="net-info-val">' + (os.OSArchitecture || 'N/D') + '</div></div>';
+      h += '<div class="net-info-item" style="grid-column:1/-1"><div class="net-info-lbl">Activaci\xf3n</div><div class="net-info-val">' + (d.activation || 'N/D') + '</div></div>';
+      h += '</div>';
+      document.getElementById('adnBody').innerHTML = h;
+    } catch(e) {
+      document.getElementById('adnBody').innerHTML = '<div class="modal-loading">&#x26A0;&#xFE0F; Error al parsear datos</div>';
+    }
+  }).catch(function() {
+    document.getElementById('adnBody').innerHTML = '<div class="modal-loading">&#x26A0;&#xFE0F; Error de comunicaci\xf3n</div>';
+  });
+}
+function cerrarModalADN() {
+  document.getElementById('adnModal').classList.remove('open');
+  document.getElementById('adnBody').innerHTML = '<div class="modal-loading">&#x1F50D; Leyendo ADN del sistema&hellip;</div>';
+}
+function cerrarModalADNOv(e) {
+  if (e.target === document.getElementById('adnModal')) cerrarModalADN();
 }
 
 window.addEventListener('resize', () => { _drawCPUFrame(_cpuDisp); drawRAM(_lastRamPct); });
