@@ -2785,6 +2785,20 @@ html[data-theme="dark"] .btn-wh-run:hover:not(:disabled) { background:rgba(0,57,
 .btn-t { background:var(--info-bg); border:none; color:var(--info-text); }
 .btn-t:hover { opacity:.80; }
 html[data-theme="dark"] .btn-t { background:rgba(75,158,255,.15); color:#4B9EFF; }
+.btn-glass {
+  background: rgba(255,255,255,0.18);
+  border: 1.5px solid rgba(255,255,255,0.45);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  color: #ffffff;
+  border-radius: 10px;
+  padding: 8px 18px;
+  font-weight: 600;
+  font-size: 14px;
+  cursor: pointer;
+  transition: background 0.2s ease, border 0.2s ease;
+}
+.btn-glass:hover { background: rgba(255,255,255,0.30); border-color: rgba(255,255,255,0.65); }
 /* ── Termómetro modal ── */
 .thermo-row { padding:12px 0; border-bottom:1px solid var(--card-bd); }
 .thermo-row:last-child { border-bottom:none; }
@@ -2990,9 +3004,9 @@ html[data-theme="light"] .clean-done-wrap { background:rgba(34,197,94,.06); bord
 <div class="diag-actions">
   <button class="btn btn-p" id="btnGenVisual" onclick="doGenVisual()">&#x1F4CA; Generar Reporte Visual</button>
   <button class="btn btn-s" id="btnOpenFolder" onclick="doOpenFolder()" style="display:none">&#x1F5BC;&#xFE0F; Abrir Reporte</button>
-  <button class="btn btn-t" onclick="openThermoModal()">&#x1F321;&#xFE0F; Term&oacute;metro</button>
-  <button class="btn btn-t" onclick="openNetModal()">&#x26A1; Pulso de Red</button>
-  <button class="btn btn-t" onclick="limpiarSistema()">&#x1F9F9; Limpiar Sistema</button>
+  <button class="btn-glass" onclick="openThermoModal()">&#x1F321;&#xFE0F; Term&oacute;metro</button>
+  <button class="btn-glass" onclick="openNetModal()">&#x26A1; Pulso de Red</button>
+  <button class="btn-glass" onclick="limpiarSistema()">&#x1F9F9; Limpiar Sistema</button>
 </div>
 <div class="rep-wrap">
   <div class="rep-body">
