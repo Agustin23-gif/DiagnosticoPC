@@ -2653,12 +2653,11 @@ html[data-theme="dark"] #sMsg { color: var(--txt2); opacity: 1; }
   opacity: 0; pointer-events: none;
   transition: opacity .2s;
 }
-.modal-ov.open { opacity: 1; pointer-events: none; }
+.modal-ov.open { opacity: 1; pointer-events: all; }
 .modal-card {
   width: 520px; max-width: calc(100vw - 32px);
   max-height: calc(100vh - 64px); overflow-y: auto;
   border-radius: 20px; padding: 24px 24px 20px; position: relative;
-  z-index: 99999; pointer-events: auto !important;
   transform: translateY(10px); transition: transform .22s;
 }
 .modal-ov.open .modal-card { transform: translateY(0); }
@@ -2723,7 +2722,7 @@ html[data-theme="dark"]  .modal-smart-note { background:rgba(255,255,255,.03); }
 html[data-theme="light"] .modal-smart-note { background:rgba(0,0,0,.03); }
 .modal-loading { text-align:center; padding:36px 20px; color:var(--txt2); font-size:13px; }
 /* ── Sanar Disco modal ─────────────────────────────────────────── */
-.chk-modal-card { width:600px; max-width:calc(100vw - 32px); max-height:calc(100vh - 64px); overflow-y:auto; border-radius:20px; padding:24px 24px 20px; position:relative; z-index:99999; pointer-events:auto !important; transform:translateY(10px); transition:transform .22s; }
+.chk-modal-card { width:600px; max-width:calc(100vw - 32px); max-height:calc(100vh - 64px); overflow-y:auto; border-radius:20px; padding:24px 24px 20px; position:relative; transform:translateY(10px); transition:transform .22s; }
 html[data-theme="dark"]  .chk-modal-card { background:#0D1320; border:1px solid #1A2540; box-shadow:0 32px 96px rgba(0,0,0,.8); }
 html[data-theme="light"] .chk-modal-card { background:#FFFFFF;  border:1px solid rgba(0,0,0,.06); box-shadow:0 32px 96px rgba(0,0,0,.18); }
 .modal-ov.open .chk-modal-card { transform:translateY(0); }
@@ -4696,7 +4695,6 @@ function abrirModalADN() {
 
 window.addEventListener('resize', () => { _drawCPUFrame(_cpuDisp); drawRAM(_lastRamPct); });
 </script>
-
 </body>
 </html>
 """
