@@ -2451,13 +2451,6 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-#main-content {
-  height: calc(100vh - 55px);
-  overflow-y: auto;
-  overflow-x: hidden;
-  flex-shrink: 0;
-}
-
 /* ── Header ── */
 .hdr {
   display: flex; align-items: center; gap: 12px;
@@ -3039,7 +3032,6 @@ html[data-theme="dark"] .adn-value { color: #e2e8f0; }
   </button>
 </header>
 
-<div id="main-content">
 <div class="section-label">MONITOREO EN TIEMPO REAL</div>
 <div class="metrics">
   <div class="card">
@@ -3131,7 +3123,6 @@ html[data-theme="dark"] .adn-value { color: #e2e8f0; }
   <div class="dot" id="dot"></div>
   <span id="sMsg">Listo &mdash; presion&aacute; Generar Reporte Visual para comenzar</span>
 </div>
-</div><!-- /#main-content -->
 
 <div id="diskModal" class="modal-ov" onclick="closeModalOv(event)">
   <div class="modal-card">
