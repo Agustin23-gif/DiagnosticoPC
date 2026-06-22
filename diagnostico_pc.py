@@ -1556,6 +1556,63 @@ class Api:
 
         return json.dumps({"freed": freed, "freed_fmt": _fb(freed)})
 
+    def get_system_info(self):
+        try:
+            result = {}
+
+            # Placa madre
+            r = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                 "Get-WmiObject Win32_BaseBoard | Select-Object Manufacturer,Product | ConvertTo-Json -Compress"],
+                capture_output=True, text=True, timeout=10, **_NWIN
+            )
+            if r.returncode == 0 and r.stdout.strip():
+                result["motherboard"] = json.loads(r.stdout.strip())
+
+            # BIOS
+            r = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                 "Get-WmiObject Win32_BIOS | Select-Object SMBIOSBIOSVersion,ReleaseDate | ConvertTo-Json -Compress"],
+                capture_output=True, text=True, timeout=10, **_NWIN
+            )
+            if r.returncode == 0 and r.stdout.strip():
+                result["bios"] = json.loads(r.stdout.strip())
+
+            # GPU
+            r = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                 "Get-WmiObject Win32_VideoController | Select-Object Name,AdapterRAM,CurrentHorizontalResolution,CurrentVerticalResolution | ConvertTo-Json -Compress"],
+                capture_output=True, text=True, timeout=10, **_NWIN
+            )
+            if r.returncode == 0 and r.stdout.strip():
+                raw = json.loads(r.stdout.strip())
+                result["gpu"] = [raw] if isinstance(raw, dict) else raw
+
+            # SO
+            r = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                 "Get-WmiObject Win32_OperatingSystem | Select-Object Caption,BuildNumber,Version,OSArchitecture | ConvertTo-Json -Compress"],
+                capture_output=True, text=True, timeout=10, **_NWIN
+            )
+            if r.returncode == 0 and r.stdout.strip():
+                result["os"] = json.loads(r.stdout.strip())
+
+            # Activación Windows
+            try:
+                r = subprocess.run(
+                    ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                     "$p = Get-WmiObject SoftwareLicensingProduct | Where-Object {$_.Name -like '*Windows*' -and $_.PartialProductKey}; if($p) { $p[0].LicenseStatus } else { 0 }"],
+                    capture_output=True, text=True, timeout=10, **_NWIN
+                )
+                status = r.stdout.strip()
+                result["activation"] = "Activado ✅" if status == "1" else "No activado ❌"
+            except Exception:
+                result["activation"] = "N/D"
+
+            return json.dumps(result)
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
     def _analyze_cleanup_worker(self):
         import json as _j, os as _os, subprocess as _sp, sys as _sys
         _nw = {"creationflags": 0x08000000} if _sys.platform == "win32" else {}
@@ -2917,6 +2974,43 @@ html[data-theme="light"] .clean-done-wrap { background:rgba(34,197,94,.06); bord
 #cleanModal .chk-modal-card     { pointer-events: auto !important; position: relative; z-index: 600; }
 #cleanModal .btn,
 #cleanModal .modal-x            { position: relative; z-index: 99999; pointer-events: auto !important; }
+
+/* ── Fix pointer-events adnModal (EdgeWebView2) ──────── */
+#adnModal.open                  { pointer-events: none; }
+#adnModal .chk-modal-card       { pointer-events: auto !important; position: relative; z-index: 600; }
+#adnModal .modal-x              { position: relative; z-index: 99999; pointer-events: auto !important; }
+
+/* ── Estilos internos modal ADN ──────────────────────── */
+.adn-section { margin-bottom: 18px; }
+.adn-section-title {
+  font-size: 11px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.08em; color: #1E3A8A; margin-bottom: 8px;
+  padding-bottom: 4px; border-bottom: 1px solid rgba(30,58,138,0.18);
+}
+html[data-theme="dark"] .adn-section-title { color: #93c5fd; border-color: rgba(147,197,253,0.2); }
+.adn-row {
+  display: flex; justify-content: space-between; align-items: baseline;
+  gap: 12px; padding: 4px 0; font-size: 12px;
+}
+.adn-label { color: var(--txt2); flex-shrink: 0; }
+.adn-value { color: #374151; font-weight: 600; text-align: right; word-break: break-word; }
+html[data-theme="dark"] .adn-value { color: #e2e8f0; }
+.adn-gpu-block { padding: 6px 0; }
+.adn-gpu-block + .adn-gpu-block { border-top: 1px dashed rgba(128,128,128,0.2); padding-top: 10px; margin-top: 4px; }
+.btn-hdr-adn {
+  background: rgba(255,255,255,0.12);
+  border: 1px solid rgba(255,255,255,0.30);
+  color: #ffffff;
+  border-radius: 8px;
+  padding: 4px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: 'Plus Jakarta Sans', sans-serif;
+  cursor: pointer;
+  transition: background 0.2s ease;
+  margin-top: 4px;
+}
+.btn-hdr-adn:hover { background: rgba(255,255,255,0.22); }
 </style>
 </head>
 <body>
@@ -2930,6 +3024,7 @@ html[data-theme="light"] .clean-done-wrap { background:rgba(34,197,94,.06); bord
   <div class="hdr-right">
     <div class="hdr-host" id="host">—</div>
     <div class="hdr-clock" id="clock">—</div>
+    <button class="btn-hdr-adn" onclick="abrirModalADN()">&#x1F9EC; ADN del Equipo</button>
   </div>
   <button class="theme-btn" id="themeBtn" onclick="toggleTheme()" title="Cambiar tema">
     <span id="themeIcon"></span>
@@ -3315,6 +3410,17 @@ html[data-theme="light"] .clean-done-wrap { background:rgba(34,197,94,.06); bord
                      pointer-events:auto !important;">
         Cerrar
       </button>
+    </div>
+  </div>
+</div>
+
+<div id="adnModal" class="modal-ov">
+  <div class="chk-modal-card" style="max-width:520px">
+    <button class="modal-x" onclick="cerrarModalADN()">&#x2715;</button>
+    <div style="font-size:16px;font-weight:700;margin-bottom:4px;color:var(--txt)">&#x1F9EC; ADN del Equipo</div>
+    <div style="font-size:12px;color:var(--txt2);margin-bottom:16px">Informaci&oacute;n detallada del hardware y sistema</div>
+    <div id="adnBody">
+      <div class="modal-loading">&#x1F50D; Leyendo ADN del sistema&hellip;</div>
     </div>
   </div>
 </div>
@@ -4505,6 +4611,86 @@ function mostrarResultadoLimpieza(bytesFreed) {
   document.getElementById('cleanup-progress').style.display      = 'none';
   document.getElementById('cleanup-final').style.display         = 'block';
   document.getElementById('cleanup-freed-amount').textContent    = texto;
+}
+
+/* ── ADN del Equipo ──────────────────────────────────── */
+function _adnFmtBiosDate(raw) {
+  if (!raw) return 'N/D';
+  var m = String(raw).match(/^(\\d{4})(\\d{2})(\\d{2})/);
+  if (!m) return raw;
+  return m[3] + '/' + m[2] + '/' + m[1];
+}
+
+function _adnFmtVRAM(bytes) {
+  if (!bytes || bytes <= 0) return 'Compartida (integrada)';
+  var gb = bytes / 1073741824;
+  return gb >= 1 ? gb.toFixed(1) + ' GB' : (bytes / 1048576).toFixed(0) + ' MB';
+}
+
+function cerrarModalADN() {
+  document.getElementById('adnModal').classList.remove('open');
+  document.getElementById('adnBody').innerHTML = '<div class="modal-loading">&#x1F50D; Leyendo ADN del sistema&hellip;</div>';
+}
+
+function abrirModalADN() {
+  document.getElementById('adnBody').innerHTML = '<div class="modal-loading">&#x1F50D; Leyendo ADN del sistema&hellip;</div>';
+  document.getElementById('adnModal').classList.add('open');
+  if (!window.pywebview || !window.pywebview.api) { return; }
+  window.pywebview.api.get_system_info().then(function(raw) {
+    var d;
+    try { d = JSON.parse(raw); } catch(e) { d = { error: 'Error al parsear respuesta' }; }
+    if (d.error) {
+      document.getElementById('adnBody').innerHTML = '<div style="color:#ef4444;font-size:13px;padding:12px 0;">Error: ' + d.error + '</div>';
+      return;
+    }
+
+    var html = '';
+
+    /* ── Sección 1: Placa Madre ── */
+    html += '<div class="adn-section">';
+    html += '<div class="adn-section-title">&#x1F4CB; Placa Madre</div>';
+    var mb = d.motherboard || {};
+    var bios = d.bios || {};
+    html += '<div class="adn-row"><span class="adn-label">Fabricante</span><span class="adn-value">' + (mb.Manufacturer || 'N/D') + '</span></div>';
+    html += '<div class="adn-row"><span class="adn-label">Modelo</span><span class="adn-value">' + (mb.Product || 'N/D') + '</span></div>';
+    html += '<div class="adn-row"><span class="adn-label">Versi&oacute;n BIOS</span><span class="adn-value">' + (bios.SMBIOSBIOSVersion || 'N/D') + '</span></div>';
+    html += '<div class="adn-row"><span class="adn-label">Fecha BIOS</span><span class="adn-value">' + _adnFmtBiosDate(bios.ReleaseDate) + '</span></div>';
+    html += '</div>';
+
+    /* ── Sección 2: GPU ── */
+    html += '<div class="adn-section">';
+    html += '<div class="adn-section-title">&#x1F5A5;&#xFE0F; Tarjeta de Video</div>';
+    var gpus = d.gpu || [];
+    if (gpus.length === 0) {
+      html += '<div class="adn-row"><span class="adn-label">GPU</span><span class="adn-value">N/D</span></div>';
+    } else {
+      gpus.forEach(function(g, i) {
+        if (gpus.length > 1) html += '<div class="adn-gpu-block">';
+        if (gpus.length > 1) html += '<div style="font-size:11px;color:var(--txt2);margin-bottom:4px;">GPU ' + (i + 1) + '</div>';
+        html += '<div class="adn-row"><span class="adn-label">Nombre</span><span class="adn-value">' + (g.Name || 'N/D') + '</span></div>';
+        html += '<div class="adn-row"><span class="adn-label">VRAM</span><span class="adn-value">' + _adnFmtVRAM(g.AdapterRAM) + '</span></div>';
+        var res = (g.CurrentHorizontalResolution && g.CurrentVerticalResolution)
+          ? g.CurrentHorizontalResolution + ' × ' + g.CurrentVerticalResolution
+          : 'N/D';
+        html += '<div class="adn-row"><span class="adn-label">Resoluci&oacute;n</span><span class="adn-value">' + res + '</span></div>';
+        if (gpus.length > 1) html += '</div>';
+      });
+    }
+    html += '</div>';
+
+    /* ── Sección 3: Sistema Operativo ── */
+    html += '<div class="adn-section">';
+    html += '<div class="adn-section-title">&#x1F4BB; Sistema Operativo</div>';
+    var os = d.os || {};
+    html += '<div class="adn-row"><span class="adn-label">Nombre</span><span class="adn-value">' + (os.Caption || 'N/D') + '</span></div>';
+    html += '<div class="adn-row"><span class="adn-label">Build</span><span class="adn-value">' + (os.BuildNumber || 'N/D') + '</span></div>';
+    html += '<div class="adn-row"><span class="adn-label">Versi&oacute;n</span><span class="adn-value">' + (os.Version || 'N/D') + '</span></div>';
+    html += '<div class="adn-row"><span class="adn-label">Arquitectura</span><span class="adn-value">' + (os.OSArchitecture || 'N/D') + '</span></div>';
+    html += '<div class="adn-row"><span class="adn-label">Activaci&oacute;n</span><span class="adn-value">' + (d.activation || 'N/D') + '</span></div>';
+    html += '</div>';
+
+    document.getElementById('adnBody').innerHTML = html;
+  });
 }
 
 window.addEventListener('resize', () => { _drawCPUFrame(_cpuDisp); drawRAM(_lastRamPct); });
