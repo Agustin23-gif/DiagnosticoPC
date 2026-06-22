@@ -1464,6 +1464,183 @@ class Api:
         self._net_cancel = True
         return json.dumps({"ok": True})
 
+    # ── Limpiar Sistema ───────────────────────────────────────────────────
+    def analyze_cleanup(self):
+        import threading as _thr
+        if getattr(self, '_clean_thread', None) and self._clean_thread.is_alive():
+            return json.dumps({"error": "Análisis ya en curso"})
+        self._clean_thread = _thr.Thread(target=self._analyze_cleanup_worker, daemon=True)
+        self._clean_thread.start()
+        return json.dumps({"ok": True})
+
+    def run_cleanup(self):
+        import threading as _thr
+        if getattr(self, '_clean_thread', None) and self._clean_thread.is_alive():
+            return json.dumps({"error": "Limpieza ya en curso"})
+        self._clean_thread = _thr.Thread(target=self._run_cleanup_worker, daemon=True)
+        self._clean_thread.start()
+        return json.dumps({"ok": True})
+
+    def _analyze_cleanup_worker(self):
+        import json as _j, os as _os, subprocess as _sp, sys as _sys
+        _nw = {"creationflags": 0x08000000} if _sys.platform == "win32" else {}
+
+        def push(js):
+            try:
+                import webview as _wv
+                _wv.windows[0].evaluate_js(js)
+            except Exception:
+                pass
+
+        def dir_size(path):
+            total = 0
+            try:
+                for root, dirs, files in _os.walk(path):
+                    for f in files:
+                        try:
+                            total += _os.path.getsize(_os.path.join(root, f))
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+            return total
+
+        def fmt(b):
+            if b >= 1_073_741_824: return f"{b/1_073_741_824:.1f} GB"
+            if b >= 1_048_576:     return f"{b/1_048_576:.0f} MB"
+            if b >= 1024:          return f"{b/1024:.0f} KB"
+            return f"{b} B"
+
+        try:
+            results = []
+
+            temp_user = _os.environ.get('TEMP', _os.path.join(
+                _os.environ.get('USERPROFILE', 'C:\\Users\\Default'), 'AppData', 'Local', 'Temp'))
+            sz = dir_size(temp_user)
+            results.append({'key': 'temp_user', 'label': 'Temporales del usuario (%TEMP%)',
+                            'icon': '\U0001f5c2', 'bytes': sz, 'size': fmt(sz)})
+            push('cleanOnCategoryResult(' + _j.dumps(results[-1]) + ')')
+
+            sz = dir_size(r'C:\Windows\Temp')
+            results.append({'key': 'temp_win', 'label': 'Temporales de Windows',
+                            'icon': '\U0001f5c2', 'bytes': sz, 'size': fmt(sz)})
+            push('cleanOnCategoryResult(' + _j.dumps(results[-1]) + ')')
+
+            recycle_bytes = 0
+            try:
+                ps = _sp.run(
+                    ['powershell', '-NoProfile', '-NonInteractive', '-Command',
+                     "(New-Object -ComObject Shell.Application).Namespace(0xA).Items() | "
+                     "Measure-Object -Property Size -Sum | Select-Object -ExpandProperty Sum"],
+                    capture_output=True, text=True, timeout=15, **_nw)
+                val = ps.stdout.strip()
+                if val and val.replace('.', '', 1).isdigit():
+                    recycle_bytes = int(float(val))
+            except Exception:
+                pass
+            results.append({'key': 'recycle', 'label': 'Papelera de reciclaje',
+                            'icon': '\U0001f5d1', 'bytes': recycle_bytes, 'size': fmt(recycle_bytes)})
+            push('cleanOnCategoryResult(' + _j.dumps(results[-1]) + ')')
+
+            sz = dir_size(r'C:\Windows\SoftwareDistribution\Download')
+            results.append({'key': 'wupdate', 'label': 'Caché Windows Update',
+                            'icon': '\U0001f504', 'bytes': sz, 'size': fmt(sz)})
+            push('cleanOnCategoryResult(' + _j.dumps(results[-1]) + ')')
+
+            total = sum(r['bytes'] for r in results)
+            push('cleanOnAnalysisDone(' + _j.dumps(
+                {'total_bytes': total, 'total': fmt(total), 'categories': results}) + ')')
+
+        except Exception as e:
+            push('cleanOnAnalysisDone(' + _j.dumps({'error': str(e)}) + ')')
+
+    def _run_cleanup_worker(self):
+        import json as _j, os as _os, shutil as _sh, subprocess as _sp, sys as _sys, time as _t
+        _nw = {"creationflags": 0x08000000} if _sys.platform == "win32" else {}
+
+        def push(js):
+            try:
+                import webview as _wv
+                _wv.windows[0].evaluate_js(js)
+            except Exception:
+                pass
+
+        def progress(pct, label):
+            push('cleanUpdateProgress(' + str(pct) + ',' + _j.dumps(label) + ')')
+
+        def on_step(data):
+            push('cleanOnStep(' + _j.dumps(data) + ')')
+
+        def fmt(b):
+            if b >= 1_073_741_824: return f"{b/1_073_741_824:.1f} GB"
+            if b >= 1_048_576:     return f"{b/1_048_576:.0f} MB"
+            if b >= 1024:          return f"{b/1024:.0f} KB"
+            return f"{b} B"
+
+        def del_dir_contents(path):
+            freed = 0
+            try:
+                for name in _os.listdir(path):
+                    fp = _os.path.join(path, name)
+                    try:
+                        if _os.path.isdir(fp):
+                            for root, dirs, files in _os.walk(fp):
+                                for f in files:
+                                    try: freed += _os.path.getsize(_os.path.join(root, f))
+                                    except Exception: pass
+                            _sh.rmtree(fp, ignore_errors=True)
+                        else:
+                            freed += _os.path.getsize(fp)
+                            _os.remove(fp)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            return freed
+
+        total_freed = 0
+        try:
+            # Temporales usuario
+            progress(5, 'Limpiando temporales del usuario...')
+            temp_user = _os.environ.get('TEMP', '')
+            f1 = del_dir_contents(temp_user) if temp_user else 0
+            total_freed += f1
+            on_step({'label': 'Temporales del usuario', 'freed': fmt(f1)})
+            progress(25, 'Limpiando temporales de Windows...')
+
+            # Temporales Windows
+            f2 = del_dir_contents(r'C:\Windows\Temp')
+            total_freed += f2
+            on_step({'label': 'Temporales de Windows', 'freed': fmt(f2)})
+            progress(50, 'Vaciando papelera...')
+
+            # Papelera
+            try:
+                _sp.run(['powershell', '-NoProfile', '-NonInteractive', '-Command',
+                         'Clear-RecycleBin -Force -ErrorAction SilentlyContinue'],
+                        capture_output=True, timeout=30, **_nw)
+                on_step({'label': 'Papelera de reciclaje', 'freed': 'Vaciada'})
+            except Exception:
+                on_step({'label': 'Papelera de reciclaje', 'freed': 'Omitida'})
+            progress(70, 'Limpiando caché Windows Update...')
+
+            # Windows Update
+            try:
+                _sp.run(['net', 'stop', 'wuauserv'], capture_output=True, timeout=20, **_nw)
+                _t.sleep(1)
+                f4 = del_dir_contents(r'C:\Windows\SoftwareDistribution\Download')
+                total_freed += f4
+                _sp.run(['net', 'start', 'wuauserv'], capture_output=True, timeout=20, **_nw)
+                on_step({'label': 'Caché Windows Update', 'freed': fmt(f4)})
+            except Exception:
+                on_step({'label': 'Caché Windows Update', 'freed': 'Omitida'})
+            progress(100, 'Completado')
+
+            push('cleanOnDone(' + _j.dumps({'total': fmt(total_freed), 'total_bytes': total_freed}) + ')')
+
+        except Exception as e:
+            push('cleanOnDone(' + _j.dumps({'error': str(e)}) + ')')
+
     def _net_test_worker(self):
         import subprocess as _sp, json as _j, re as _re, time as _t, os as _os
         import sys as _sys
@@ -2619,6 +2796,29 @@ html[data-theme="light"] .net-sum-stat { background:rgba(255,255,255,.6); }
 .net-sum-sv     { font-size:20px; font-weight:700; }
 .net-sum-sl     { font-size:10px; color:var(--txt2); margin-top:2px; }
 .net-badge-glob { text-align:center; font-size:13px; font-weight:600; padding:9px; border-radius:8px; margin-bottom:12px; }
+
+/* ── Limpiar Sistema ───────────────────────────────────── */
+.clean-cat-row  { display:flex; align-items:center; gap:10px; padding:9px 12px; border-radius:9px; margin-bottom:6px; }
+html[data-theme="dark"]  .clean-cat-row { background:#080E1C; border:1px solid #1A2540; }
+html[data-theme="light"] .clean-cat-row { background:rgba(26,86,196,.04); border:1px solid rgba(26,86,196,.10); }
+.clean-cat-icon { font-size:16px; flex-shrink:0; }
+.clean-cat-lbl  { flex:1; font-size:13px; color:var(--txt); }
+.clean-cat-size { font-size:13px; font-weight:700; color:var(--brand); white-space:nowrap; }
+.clean-total-row { display:flex; align-items:center; justify-content:space-between; padding:10px 12px; border-radius:9px; margin-top:4px; }
+html[data-theme="dark"]  .clean-total-row { background:rgba(26,86,196,.12); border:1px solid rgba(26,86,196,.25); }
+html[data-theme="light"] .clean-total-row { background:rgba(26,86,196,.08); border:1px solid rgba(26,86,196,.18); }
+.clean-total-size { font-size:15px; font-weight:700; color:var(--brand); }
+.clean-step-row { display:flex; align-items:center; justify-content:space-between; padding:7px 12px; border-radius:8px; margin-bottom:5px; font-size:13px; }
+html[data-theme="dark"]  .clean-step-row { background:#080E1C; border:1px solid #1A2540; }
+html[data-theme="light"] .clean-step-row { background:rgba(34,197,94,.05); border:1px solid rgba(34,197,94,.15); }
+.clean-step-lbl { color:var(--txt); }
+.clean-step-val { font-weight:700; color:var(--ok-text); }
+.clean-done-wrap  { text-align:center; padding:24px 16px; border-radius:12px; }
+html[data-theme="dark"]  .clean-done-wrap { background:rgba(34,197,94,.08); border:1px solid rgba(34,197,94,.20); }
+html[data-theme="light"] .clean-done-wrap { background:rgba(34,197,94,.06); border:1px solid rgba(34,197,94,.18); }
+.clean-done-icon  { font-size:36px; margin-bottom:8px; }
+.clean-done-title { font-size:16px; font-weight:700; color:var(--txt); margin-bottom:4px; }
+.clean-done-freed { font-size:13px; color:var(--txt2); }
 </style>
 </head>
 <body>
@@ -2711,6 +2911,7 @@ html[data-theme="light"] .net-sum-stat { background:rgba(255,255,255,.6); }
   <button class="btn btn-s" id="btnOpenFolder" onclick="doOpenFolder()" style="display:none">&#x1F5BC;&#xFE0F; Abrir Reporte</button>
   <button class="btn btn-t" onclick="openThermoModal()">&#x1F321;&#xFE0F; Term&oacute;metro</button>
   <button class="btn btn-t" onclick="openNetModal()">&#x26A1; Pulso de Red</button>
+  <button class="btn btn-t" onclick="limpiarSistema()">&#x1F9F9; Limpiar Sistema</button>
 </div>
 <div class="rep-wrap">
   <div class="rep-body">
@@ -2945,6 +3146,41 @@ html[data-theme="light"] .net-sum-stat { background:rgba(255,255,255,.6); }
     <div id="netRepeatSection" style="display:none;margin-top:12px">
       <button class="btn btn-s" style="width:100%;padding:10px;border-radius:10px" onclick="startNetTest()">&#x1F504; Repetir Test</button>
     </div>
+  </div>
+</div>
+
+<div id="cleanModal" class="modal-ov" onclick="closeCleanOv(event)">
+  <div class="chk-modal-card" style="max-width:460px">
+    <button class="modal-x" onclick="closeCleanModal()">&#x2715;</button>
+    <div style="font-size:16px;font-weight:700;margin-bottom:4px;color:var(--txt)">&#x1F9F9; Limpiar Sistema</div>
+    <div style="font-size:12px;color:var(--txt2);margin-bottom:16px">Libera espacio eliminando archivos temporales y cach&eacute;</div>
+
+    <!-- Fase 1: Análisis por categoría -->
+    <div id="cleanAnalyzeSection">
+      <div id="cleanAnalyzeBody">
+        <div class="modal-loading">&#x1F50D; Analizando sistema&hellip;</div>
+      </div>
+    </div>
+
+    <!-- Botón confirmar limpieza (aparece al terminar análisis) -->
+    <div id="cleanActionSection" style="display:none;margin-top:14px">
+      <button class="btn btn-p" style="width:100%;padding:11px;border-radius:10px;font-size:14px" onclick="startClean()">&#x1F9F9; Limpiar Ahora</button>
+    </div>
+
+    <!-- Fase 2: Limpieza en progreso -->
+    <div id="cleanRunSection" style="display:none">
+      <div class="net-prog-wrap" style="margin-top:4px">
+        <div class="net-prog-top">
+          <span class="net-prog-step" id="cleanStepLabel">Iniciando&hellip;</span>
+          <span class="net-prog-pct"  id="cleanPctLabel">0%</span>
+        </div>
+        <div class="net-prog-track"><div class="net-prog-fill" id="cleanProgFill"></div></div>
+      </div>
+      <div id="cleanRunDetails" style="margin-top:10px"></div>
+    </div>
+
+    <!-- Resultado final -->
+    <div id="cleanDoneSection" style="display:none;margin-top:8px"></div>
   </div>
 </div>
 
@@ -4033,6 +4269,97 @@ function netOnDone(data) {
     + '<div class="net-sum-stat"><div class="net-sum-sv" style="color:' + jC + '">' + (jitter != null ? jitter + ' ms' : '—') + '</div><div class="net-sum-sl">Jitter</div></div>'
     + '</div>'
     + '</div>';
+}
+
+// ── Limpiar Sistema ──────────────────────────────────────────────────────
+var _cleanCats = [];
+
+function limpiarSistema() {
+  document.getElementById('cleanModal').classList.add('open');
+  document.getElementById('cleanAnalyzeSection').style.display = '';
+  document.getElementById('cleanAnalyzeBody').innerHTML        = '<div class="modal-loading">&#x1F50D; Analizando sistema&hellip;</div>';
+  document.getElementById('cleanActionSection').style.display  = 'none';
+  document.getElementById('cleanRunSection').style.display     = 'none';
+  document.getElementById('cleanDoneSection').style.display    = 'none';
+  document.getElementById('cleanRunDetails').innerHTML         = '';
+  _cleanCats = [];
+  if (window.pywebview && window.pywebview.api) window.pywebview.api.analyze_cleanup();
+}
+function closeCleanModal() { document.getElementById('cleanModal').classList.remove('open'); }
+function closeCleanOv(e)   { if (e.target === document.getElementById('cleanModal')) closeCleanModal(); }
+
+function cleanOnCategoryResult(data) {
+  _cleanCats.push(data);
+  var el = document.getElementById('cleanAnalyzeBody');
+  el.innerHTML = _cleanCats.map(function(c) {
+    return '<div class="clean-cat-row">'
+         + '<span class="clean-cat-icon">' + c.icon + '</span>'
+         + '<span class="clean-cat-lbl">' + c.label + '</span>'
+         + '<span class="clean-cat-size">' + c.size + '</span>'
+         + '</div>';
+  }).join('');
+}
+
+function cleanOnAnalysisDone(data) {
+  if (data.error) {
+    document.getElementById('cleanAnalyzeBody').innerHTML =
+      '<div class="modal-loading" style="color:var(--error)">&#x26A0;&#xFE0F; Error: ' + data.error + '</div>';
+    return;
+  }
+  var html = (data.categories || []).map(function(c) {
+    return '<div class="clean-cat-row">'
+         + '<span class="clean-cat-icon">' + c.icon + '</span>'
+         + '<span class="clean-cat-lbl">' + c.label + '</span>'
+         + '<span class="clean-cat-size">' + c.size + '</span>'
+         + '</div>';
+  }).join('');
+  html += '<div class="clean-total-row">'
+        + '<span style="font-weight:700;color:var(--txt)">Total a liberar</span>'
+        + '<span class="clean-total-size">' + data.total + '</span>'
+        + '</div>';
+  document.getElementById('cleanAnalyzeBody').innerHTML = html;
+  document.getElementById('cleanActionSection').style.display = '';
+}
+
+function startClean() {
+  document.getElementById('cleanAnalyzeSection').style.display = 'none';
+  document.getElementById('cleanActionSection').style.display  = 'none';
+  document.getElementById('cleanRunSection').style.display     = '';
+  document.getElementById('cleanDoneSection').style.display    = 'none';
+  document.getElementById('cleanProgFill').style.width         = '0%';
+  document.getElementById('cleanStepLabel').textContent        = 'Iniciando…';
+  document.getElementById('cleanPctLabel').textContent         = '0%';
+  document.getElementById('cleanRunDetails').innerHTML         = '';
+  if (window.pywebview && window.pywebview.api) window.pywebview.api.run_cleanup();
+}
+
+function cleanUpdateProgress(pct, label) {
+  document.getElementById('cleanProgFill').style.width  = pct + '%';
+  document.getElementById('cleanStepLabel').textContent = label;
+  document.getElementById('cleanPctLabel').textContent  = pct + '%';
+}
+
+function cleanOnStep(data) {
+  var row = document.createElement('div');
+  row.className = 'clean-step-row';
+  row.innerHTML = '<span class="clean-step-lbl">&#x2705; ' + data.label + '</span>'
+                + '<span class="clean-step-val">' + data.freed + '</span>';
+  document.getElementById('cleanRunDetails').appendChild(row);
+}
+
+function cleanOnDone(data) {
+  document.getElementById('cleanRunSection').style.display  = 'none';
+  document.getElementById('cleanDoneSection').style.display = '';
+  var el = document.getElementById('cleanDoneSection');
+  if (data.error) {
+    el.innerHTML = '<div class="modal-loading" style="color:var(--error)">&#x26A0;&#xFE0F; Error: ' + data.error + '</div>';
+    return;
+  }
+  el.innerHTML = '<div class="clean-done-wrap">'
+               + '<div class="clean-done-icon">&#x2705;</div>'
+               + '<div class="clean-done-title">Limpieza completada</div>'
+               + '<div class="clean-done-freed">Se liberaron <b>' + data.total + '</b></div>'
+               + '</div>';
 }
 
 window.addEventListener('resize', () => { _drawCPUFrame(_cpuDisp); drawRAM(_lastRamPct); });
