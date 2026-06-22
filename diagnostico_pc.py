@@ -3196,10 +3196,35 @@ html[data-theme="light"] .clean-done-wrap { background:rgba(34,197,94,.06); bord
     <div style="font-size:16px;font-weight:700;margin-bottom:4px;color:var(--txt)">&#x1F9F9; Limpiar Sistema</div>
     <div style="font-size:12px;color:var(--txt2);margin-bottom:16px">Libera espacio eliminando archivos temporales y cach&eacute;</div>
 
-    <!-- Fase 1: Análisis + botón (todo en cleanAnalyzeBody) -->
+    <!-- Categorías del análisis (spinner → filas) -->
     <div id="cleanAnalyzeBody">
       <div class="modal-loading">&#x1F50D; Analizando sistema&hellip;</div>
     </div>
+
+    <!-- Total (oculto hasta que termina el análisis) -->
+    <div id="cleanTotalRow" class="clean-total-row" style="display:none;margin-top:8px">
+      <span style="font-weight:700;color:var(--txt)">Total a liberar</span>
+      <span id="cleanTotalVal" class="clean-total-size">—</span>
+    </div>
+
+    <!-- Botón Limpiar Ahora — siempre en el DOM, solo se muestra/oculta -->
+    <button id="cleanLimpiarBtn"
+            class="btn btn-p"
+            style="display:none;width:100%;margin-top:14px;padding:11px;border-radius:10px;font-size:14px"
+            onclick="ejecutarLimpieza()">
+      &#x1F9F9; Limpiar Ahora
+    </button>
+
+    <!-- Resultado de la limpieza -->
+    <div id="cleanResultEl" style="display:none;margin-top:10px"></div>
+
+    <!-- Botón Cerrar (post-limpieza) — siempre en el DOM -->
+    <button id="cleanCerrarBtn"
+            class="btn btn-s"
+            style="display:none;width:100%;margin-top:10px;padding:10px;border-radius:10px"
+            onclick="closeCleanModal()">
+      Cerrar
+    </button>
   </div>
 </div>
 
@@ -4294,78 +4319,90 @@ function netOnDone(data) {
 var _cleanCats = [];
 
 function limpiarSistema() {
-  document.getElementById('cleanModal').classList.add('open');
-  document.getElementById('cleanAnalyzeBody').innerHTML = '<div class="modal-loading">&#x1F50D; Analizando sistema&hellip;</div>';
+  // Resetear estado
   _cleanCats = [];
-  if (window.pywebview && window.pywebview.api) window.pywebview.api.analyze_cleanup();
+  document.getElementById('cleanAnalyzeBody').innerHTML = '<div class="modal-loading">&#x1F50D; Analizando sistema&hellip;</div>';
+  document.getElementById('cleanTotalRow').style.display    = 'none';
+  document.getElementById('cleanTotalVal').textContent      = '—';
+  document.getElementById('cleanLimpiarBtn').style.display  = 'none';
+  document.getElementById('cleanLimpiarBtn').disabled       = false;
+  document.getElementById('cleanLimpiarBtn').innerHTML      = '&#x1F9F9; Limpiar Ahora';
+  document.getElementById('cleanResultEl').style.display    = 'none';
+  document.getElementById('cleanResultEl').innerHTML        = '';
+  document.getElementById('cleanCerrarBtn').style.display   = 'none';
+  // Abrir modal y lanzar análisis
+  document.getElementById('cleanModal').classList.add('open');
+  if (window.pywebview && window.pywebview.api) {
+    window.pywebview.api.analyze_cleanup();
+  }
 }
-function closeCleanModal() { document.getElementById('cleanModal').classList.remove('open'); }
-function closeCleanOv(e)   { if (e.target === document.getElementById('cleanModal')) closeCleanModal(); }
+
+function closeCleanModal() {
+  document.getElementById('cleanModal').classList.remove('open');
+}
+
+function closeCleanOv(e) {
+  if (e.target === document.getElementById('cleanModal')) {
+    closeCleanModal();
+  }
+}
 
 function cleanOnCategoryResult(data) {
   _cleanCats.push(data);
   document.getElementById('cleanAnalyzeBody').innerHTML = _cleanCats.map(function(c) {
     return '<div class="clean-cat-row">'
          + '<span class="clean-cat-icon">' + c.icon + '</span>'
-         + '<span class="clean-cat-lbl">' + c.label + '</span>'
-         + '<span class="clean-cat-size">' + c.size + '</span>'
+         + '<span class="clean-cat-lbl">'  + c.label + '</span>'
+         + '<span class="clean-cat-size">' + c.size  + '</span>'
          + '</div>';
   }).join('');
 }
 
 function cleanOnAnalysisDone(data) {
-  var el = document.getElementById('cleanAnalyzeBody');
   if (data.error) {
-    el.innerHTML = '<div class="modal-loading" style="color:var(--error)">&#x26A0;&#xFE0F; Error: ' + data.error + '</div>';
+    document.getElementById('cleanAnalyzeBody').innerHTML =
+      '<div class="modal-loading" style="color:var(--error)">&#x26A0;&#xFE0F; Error: ' + data.error + '</div>';
     return;
   }
-  var html = (data.categories || []).map(function(c) {
+  // Renderizar filas de categorías
+  document.getElementById('cleanAnalyzeBody').innerHTML = (data.categories || []).map(function(c) {
     return '<div class="clean-cat-row">'
-         + '<span class="clean-cat-icon">' + c.icon + '</span>'
-         + '<span class="clean-cat-lbl">' + c.label + '</span>'
-         + '<span class="clean-cat-size">' + c.size + '</span>'
+         + '<span class="clean-cat-icon">' + c.icon  + '</span>'
+         + '<span class="clean-cat-lbl">'  + c.label + '</span>'
+         + '<span class="clean-cat-size">' + c.size  + '</span>'
          + '</div>';
   }).join('');
-  html += '<div class="clean-total-row"><span style="font-weight:700;color:var(--txt)">Total a liberar</span>'
-        + '<span class="clean-total-size">' + data.total + '</span></div>';
-  html += '<button id="cleanBtn" class="btn btn-p" style="width:100%;margin-top:14px;padding:11px;border-radius:10px;font-size:14px" onclick="doClean()">'
-        + '&#x1F9F9; Limpiar Ahora</button>';
-  html += '<div id="cleanResultEl" style="margin-top:10px"></div>';
-  el.innerHTML = html;
+  // Mostrar total
+  document.getElementById('cleanTotalVal').textContent   = data.total || '—';
+  document.getElementById('cleanTotalRow').style.display = '';
+  // Mostrar botón Limpiar Ahora
+  document.getElementById('cleanLimpiarBtn').style.display = '';
 }
 
-function doClean() {
-  var btn = document.getElementById('cleanBtn');
-  if (!btn || !window.pywebview || !window.pywebview.api) return;
-  btn.disabled = true;
-  btn.textContent = 'Limpiando…';
+function ejecutarLimpieza() {
+  var btn = document.getElementById('cleanLimpiarBtn');
+  btn.disabled  = true;
+  btn.innerHTML = 'Limpiando…';
+  if (!window.pywebview || !window.pywebview.api) { return; }
   window.pywebview.api.run_cleanup().then(function(raw) {
-    try {
-      var d = JSON.parse(raw);
-      var res = document.getElementById('cleanResultEl');
-      if (d.error) {
-        res.innerHTML = '<div style="color:var(--error);font-size:13px">&#x26A0;&#xFE0F; ' + d.error + '</div>';
-        btn.disabled = false;
-        btn.innerHTML = '&#x1F9F9; Limpiar Ahora';
-        return;
-      }
-      res.innerHTML = '<div class="clean-done-wrap">'
-                    + '<div class="clean-done-icon">&#x2705;</div>'
-                    + '<div class="clean-done-title">Limpieza completada</div>'
-                    + '<div class="clean-done-freed">Se liberaron <b>' + (d.freed_fmt || '—') + '</b></div>'
-                    + '</div>';
-      btn.innerHTML  = 'Cerrar';
-      btn.disabled   = false;
-      btn.onclick    = function() { closeCleanModal(); };
-    } catch(e) {
-      document.getElementById('cleanResultEl').innerHTML = '<div style="color:var(--error)">Error inesperado</div>';
-      btn.disabled = false;
-    }
-  }).catch(function() {
+    var d;
+    try { d = JSON.parse(raw); } catch(e) { d = {}; }
     var res = document.getElementById('cleanResultEl');
-    if (res) res.innerHTML = '<div style="color:var(--error)">Error al conectar con el backend</div>';
-    btn.disabled = false;
-    btn.innerHTML = '&#x1F9F9; Limpiar Ahora';
+    if (d.error) {
+      res.innerHTML      = '<div style="color:var(--error);font-size:13px">&#x26A0;&#xFE0F; ' + d.error + '</div>';
+      res.style.display  = '';
+      btn.disabled       = false;
+      btn.innerHTML      = '&#x1F9F9; Limpiar Ahora';
+      return;
+    }
+    res.innerHTML = '<div class="clean-done-wrap">'
+                  + '<div class="clean-done-icon">&#x2705;</div>'
+                  + '<div class="clean-done-title">Limpieza completada</div>'
+                  + '<div class="clean-done-freed">Se liberaron <b>' + (d.freed_fmt || '—') + '</b></div>'
+                  + '</div>';
+    res.style.display                                         = '';
+    btn.style.display                                         = 'none';
+    document.getElementById('cleanCerrarBtn').style.display  = '';
   });
 }
 
