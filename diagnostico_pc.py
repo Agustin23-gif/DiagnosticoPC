@@ -2452,10 +2452,10 @@ body {
 }
 
 #main-content {
-  flex: 1;
+  height: calc(100vh - 55px);
   overflow-y: auto;
   overflow-x: hidden;
-  min-height: 0;
+  flex-shrink: 0;
 }
 
 /* ── Header ── */
