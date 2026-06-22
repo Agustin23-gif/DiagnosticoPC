@@ -1382,6 +1382,235 @@ class Api:
             import traceback
             return json.dumps({"error": str(e), "trace": traceback.format_exc()})
 
+    # ── Pulso de Red ──────────────────────────────────────────────────────────
+    def get_net_info(self):
+        try:
+            import socket as _sk, subprocess as _sp, json as _j, re as _re
+            import sys as _sys
+            _nw = {"creationflags": 0x08000000} if _sys.platform == "win32" else {}
+            result = {}
+
+            # IP local
+            try:
+                s = _sk.socket(_sk.AF_INET, _sk.SOCK_DGRAM)
+                s.settimeout(2)
+                s.connect(("8.8.8.8", 80))
+                result['local_ip'] = s.getsockname()[0]
+                s.close()
+            except Exception:
+                result['local_ip'] = "No disponible"
+
+            # Estado de conexión
+            try:
+                _sk.create_connection(("8.8.8.8", 53), timeout=2).close()
+                result['connected'] = True
+            except Exception:
+                result['connected'] = False
+
+            # IP pública
+            if result['connected']:
+                try:
+                    import urllib.request as _ur
+                    result['public_ip'] = _ur.urlopen(
+                        'https://api.ipify.org', timeout=5).read().decode()
+                except Exception:
+                    result['public_ip'] = "Sin acceso"
+            else:
+                result['public_ip'] = "Sin conexión"
+
+            # Red / SSID
+            try:
+                p = _sp.run(['netsh', 'wlan', 'show', 'interfaces'],
+                            capture_output=True, text=True, timeout=5, **_nw)
+                ssid = None
+                for line in p.stdout.splitlines():
+                    stripped = line.strip()
+                    if stripped.startswith('SSID') and 'BSSID' not in stripped:
+                        ssid = stripped.split(':', 1)[-1].strip()
+                        break
+                result['network'] = ssid if ssid else 'Ethernet'
+            except Exception:
+                result['network'] = 'Ethernet'
+
+            # DNS
+            try:
+                p = _sp.run(['ipconfig', '/all'],
+                            capture_output=True, text=True, timeout=5, **_nw)
+                dns_found = _re.findall(
+                    r'DNS[^\n:]*:\s*([\d]{1,3}\.[\d]{1,3}\.[\d]{1,3}\.[\d]{1,3})',
+                    p.stdout, _re.IGNORECASE)
+                valid = [ip for ip in dns_found if ip and not ip.startswith('0.')]
+                result['dns_primary']   = valid[0] if len(valid) > 0 else 'N/A'
+                result['dns_secondary'] = valid[1] if len(valid) > 1 else 'N/A'
+            except Exception:
+                result['dns_primary']   = 'N/A'
+                result['dns_secondary'] = 'N/A'
+
+            return _j.dumps(result)
+        except Exception as e:
+            import json as _j2
+            return _j2.dumps({"error": str(e)})
+
+    def start_net_test(self):
+        import threading as _thr
+        self._net_cancel = False
+        if getattr(self, '_net_thread', None) and self._net_thread.is_alive():
+            return json.dumps({"error": "Test ya en curso"})
+        self._net_thread = _thr.Thread(target=self._net_test_worker, daemon=True)
+        self._net_thread.start()
+        return json.dumps({"ok": True})
+
+    def cancel_net_test(self):
+        self._net_cancel = True
+        return json.dumps({"ok": True})
+
+    def _net_test_worker(self):
+        import subprocess as _sp, json as _j, re as _re, time as _t, os as _os
+        import sys as _sys
+        _nw = {"creationflags": 0x08000000} if _sys.platform == "win32" else {}
+
+        def push(js):
+            try:
+                import webview as _wv
+                _wv.windows[0].evaluate_js(js)
+            except Exception:
+                pass
+
+        def progress(pct, label):
+            push('netUpdateProgress(' + str(pct) + ',' + _j.dumps(label) + ')')
+
+        def on_step(data):
+            push('netOnStep(' + _j.dumps(data) + ')')
+
+        all_times = []
+        res = {}
+        try:
+            # ── PASO 1: PING ──
+            progress(5, 'Midiendo latencia...')
+            servers = [('8.8.8.8', 'Google'), ('1.1.1.1', 'Cloudflare'), ('208.67.222.222', 'OpenDNS')]
+            srv_res = []
+            for ip, name in servers:
+                if getattr(self, '_net_cancel', False):
+                    return
+                try:
+                    p = _sp.run(['ping', '-n', '4', ip],
+                                capture_output=True, text=True, timeout=20, **_nw)
+                    times = [int(m) for m in _re.findall(
+                        r'(?:tiempo|time)[=<](\d+)\s*ms', p.stdout, _re.IGNORECASE)]
+                    if times:
+                        avg = round(sum(times) / len(times))
+                        all_times.extend(times)
+                        srv_res.append({'server': name, 'ip': ip, 'ms': avg, 'ok': True})
+                    else:
+                        srv_res.append({'server': name, 'ip': ip, 'ms': None, 'ok': False})
+                except Exception:
+                    srv_res.append({'server': name, 'ip': ip, 'ms': None, 'ok': False})
+
+            ok_pings = [r['ms'] for r in srv_res if r['ms'] is not None]
+            avg_ping = round(sum(ok_pings) / len(ok_pings)) if ok_pings else None
+            jitter   = (max(all_times) - min(all_times)) if len(all_times) >= 2 else 0
+            res['ping_avg'] = avg_ping
+            res['jitter']   = jitter
+            on_step({'type': 'ping', 'servers': srv_res, 'avg_ms': avg_ping, 'jitter_ms': jitter})
+            progress(30, 'Midiendo velocidad de descarga...')
+
+            # ── PASO 2: DESCARGA ──
+            if getattr(self, '_net_cancel', False):
+                return
+            import urllib.request as _ur, ssl as _ssl
+            _ctx = _ssl.create_default_context()
+            _ctx.check_hostname = False
+            _ctx.verify_mode = _ssl.CERT_NONE
+            dl = None
+            dl_error = None
+            _dl_urls = [
+                'https://speed.cloudflare.com/__down?bytes=10000000',
+                'http://ipv4.download.thinkbroadband.com/10MB.zip',
+                'https://proof.ovh.net/files/10Mb.dat',
+            ]
+            for _url in _dl_urls:
+                if getattr(self, '_net_cancel', False):
+                    return
+                try:
+                    t0 = _t.time()
+                    with _ur.urlopen(_url, timeout=30, context=_ctx if _url.startswith('https') else None) as resp:
+                        datos = resp.read()
+                    fin = _t.time()
+                    segundos = fin - t0
+                    if segundos > 0 and len(datos) > 0:
+                        dl = round((len(datos) * 8) / (segundos * 1_000_000), 1)
+                        dl_error = None
+                        break
+                except Exception as _e:
+                    dl_error = str(_e)
+                    continue
+            res['download_mbps'] = dl
+            on_step({'type': 'download', 'mbps': dl, 'error': dl_error})
+            progress(65, 'Midiendo velocidad de subida...')
+
+            # ── PASO 3: SUBIDA ──
+            if getattr(self, '_net_cancel', False):
+                return
+            ul = None
+            ul_error = None
+            _ul_urls = [
+                'https://speed.cloudflare.com/__up',
+                'https://httpbin.org/post',
+            ]
+            datos_subida = _os.urandom(5 * 1024 * 1024)  # 5MB random
+            for _url in _ul_urls:
+                if getattr(self, '_net_cancel', False):
+                    return
+                try:
+                    req = _ur.Request(_url, data=datos_subida, method='POST')
+                    req.add_header('Content-Type', 'application/octet-stream')
+                    t0 = _t.time()
+                    with _ur.urlopen(req, timeout=30, context=_ctx if _url.startswith('https') else None) as resp:
+                        resp.read()
+                    fin = _t.time()
+                    segundos = fin - t0
+                    if segundos > 0:
+                        ul = round((len(datos_subida) * 8) / (segundos * 1_000_000), 1)
+                        ul_error = None
+                        break
+                except Exception as _e:
+                    ul_error = str(_e)
+                    continue
+            res['upload_mbps'] = ul
+            on_step({'type': 'upload', 'mbps': ul, 'error': ul_error})
+            progress(90, 'Calculando jitter...')
+
+            # ── PASO 4: JITTER (ya calculado del ping) ──
+            on_step({'type': 'jitter', 'ms': jitter})
+            progress(100, 'Completado')
+
+            # Calidad — solo con datos reales disponibles
+            data_points = 0
+            score = 0
+            if dl is not None:
+                data_points += 1
+                if dl > 50: score += 3
+                elif dl > 20: score += 2
+                elif dl > 5:  score += 1
+            if avg_ping is not None:
+                data_points += 1
+                if avg_ping < 20: score += 2
+                elif avg_ping < 50: score += 1
+            if data_points == 0:
+                quality = 'slow'
+            elif score >= 4:
+                quality = 'excellent'
+            elif score >= 2:
+                quality = 'good'
+            else:
+                quality = 'slow'
+            if jitter < 5: score += 1  # bonus no penaliza, solo mejora
+
+            push('netOnDone(' + _j.dumps({**res, 'quality': quality}) + ')')
+
+        except Exception as e:
+            push('netOnDone(' + _j.dumps({'error': str(e)}) + ')')
+
     @staticmethod
     def _get_programas():
         if not _HAS_WINREG:
@@ -2342,6 +2571,54 @@ html[data-theme="dark"] .status-pill.warn { color:#F59E0B; background:rgba(245,1
 html[data-theme="dark"] .status-pill.crit { color:#EF4444; background:rgba(239,68,68,.15); }
 /* ── RAM segmented canvas ── */
 #ramCanvas { width:100%; height:8px; display:block; margin-top:10px; }
+/* ── Pulso de Red modal ── */
+.net-info-grid { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:14px; }
+.net-info-item { border-radius:8px; padding:10px 12px; }
+html[data-theme="dark"]  .net-info-item { background:#080E1C; border:1px solid #1A2540; }
+html[data-theme="light"] .net-info-item { background:rgba(26,86,196,.05); border:1px solid rgba(26,86,196,.12); }
+.net-info-lbl { font-size:10px; font-weight:500; letter-spacing:0.06em; text-transform:uppercase; color:var(--txt2); margin-bottom:3px; }
+.net-info-val { font-size:13px; font-weight:600; color:var(--txt); word-break:break-all; }
+.net-conn-dot { display:inline-block; width:7px; height:7px; border-radius:50%; margin-right:6px; vertical-align:middle; }
+.net-conn-dot.ok  { background:#22C55E; box-shadow:0 0 5px rgba(34,197,94,.6); }
+.net-conn-dot.err { background:#EF4444; box-shadow:0 0 5px rgba(239,68,68,.6); }
+.net-prog-wrap { margin:4px 0 12px; }
+.net-prog-top  { display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; }
+.net-prog-step { font-size:12px; color:var(--txt2); }
+.net-prog-pct  { font-size:12px; font-weight:700; color:var(--brand); }
+.net-prog-track { height:6px; background:var(--bar-track); border-radius:3px; overflow:hidden; }
+.net-prog-fill  { height:100%; border-radius:3px; background:var(--brand); width:0%; transition:width .5s ease; }
+.net-step-card  { border-radius:10px; padding:12px 14px; margin-bottom:8px; }
+html[data-theme="dark"]  .net-step-card { background:#080E1C; border:1px solid #1A2540; }
+html[data-theme="light"] .net-step-card { background:rgba(26,86,196,.04); border:1px solid rgba(26,86,196,.10); }
+.net-step-hdr  { display:flex; align-items:center; justify-content:space-between; margin-bottom:6px; }
+.net-step-name { font-size:10px; font-weight:600; letter-spacing:0.08em; text-transform:uppercase; color:var(--txt2); }
+.net-step-badge { font-size:10px; font-weight:600; padding:2px 9px; border-radius:999px; }
+.net-step-main  { font-size:38px; font-weight:700; line-height:1.1; }
+.net-step-unit  { font-size:16px; font-weight:400; }
+.net-step-sub   { font-size:11px; color:var(--txt2); margin-top:3px; }
+.net-ping-grid  { display:grid; grid-template-columns:repeat(3,1fr); gap:5px; margin-top:8px; }
+.net-ping-item  { text-align:center; padding:6px 4px; border-radius:6px; }
+html[data-theme="dark"]  .net-ping-item { background:rgba(255,255,255,.04); }
+html[data-theme="light"] .net-ping-item { background:rgba(26,86,196,.06); }
+.net-ping-srv   { font-size:9px; font-weight:500; color:var(--txt2); margin-bottom:2px; }
+.net-ping-ms    { font-size:15px; font-weight:700; }
+.net-summary-wrap { border-radius:12px; padding:16px; margin-top:4px; }
+html[data-theme="dark"]  .net-summary-wrap { background:#080E1C; border:1px solid #1A2540; }
+html[data-theme="light"] .net-summary-wrap { background:rgba(26,86,196,.05); border:1px solid rgba(26,86,196,.14); }
+.net-sum-speeds { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:12px; }
+.net-sum-side   { text-align:center; padding:10px; border-radius:8px; }
+html[data-theme="dark"]  .net-sum-side { background:rgba(255,255,255,.03); }
+html[data-theme="light"] .net-sum-side { background:rgba(255,255,255,.6); }
+.net-sum-arrow  { font-size:16px; margin-bottom:3px; }
+.net-sum-big    { font-size:30px; font-weight:700; line-height:1; }
+.net-sum-lbl    { font-size:10px; color:var(--txt2); margin-top:4px; }
+.net-sum-stats  { display:grid; grid-template-columns:1fr 1fr; gap:6px; margin-bottom:12px; }
+.net-sum-stat   { text-align:center; padding:8px; border-radius:8px; }
+html[data-theme="dark"]  .net-sum-stat { background:rgba(255,255,255,.03); }
+html[data-theme="light"] .net-sum-stat { background:rgba(255,255,255,.6); }
+.net-sum-sv     { font-size:20px; font-weight:700; }
+.net-sum-sl     { font-size:10px; color:var(--txt2); margin-top:2px; }
+.net-badge-glob { text-align:center; font-size:13px; font-weight:600; padding:9px; border-radius:8px; margin-bottom:12px; }
 </style>
 </head>
 <body>
@@ -2433,6 +2710,7 @@ html[data-theme="dark"] .status-pill.crit { color:#EF4444; background:rgba(239,6
   <button class="btn btn-p" id="btnGenVisual" onclick="doGenVisual()">&#x1F4CA; Generar Reporte Visual</button>
   <button class="btn btn-s" id="btnOpenFolder" onclick="doOpenFolder()" style="display:none">&#x1F5BC;&#xFE0F; Abrir Reporte</button>
   <button class="btn btn-t" onclick="openThermoModal()">&#x1F321;&#xFE0F; Term&oacute;metro</button>
+  <button class="btn btn-t" onclick="openNetModal()">&#x26A1; Pulso de Red</button>
 </div>
 <div class="rep-wrap">
   <div class="rep-body">
@@ -2623,6 +2901,50 @@ html[data-theme="dark"] .status-pill.crit { color:#EF4444; background:rgba(239,6
     <div style="font-size:16px;font-weight:700;margin-bottom:4px;color:var(--txt)">&#x1F321;&#xFE0F; Term&oacute;metro del Sistema</div>
     <div style="font-size:12px;color:var(--txt2);margin-bottom:16px">Temperaturas en tiempo real &mdash; actualizaci&oacute;n cada 2 s</div>
     <div id="thermoList"><div class="modal-loading">Leyendo sensores&hellip;</div></div>
+  </div>
+</div>
+
+<div id="netModal" class="modal-ov" onclick="closeNetOv(event)">
+  <div class="chk-modal-card" style="max-width:500px">
+    <button class="modal-x" onclick="closeNetModal()">&#x2715;</button>
+    <div style="font-size:16px;font-weight:700;margin-bottom:4px;color:var(--txt)">&#x26A1; Pulso de Red</div>
+    <div style="font-size:12px;color:var(--txt2);margin-bottom:16px">An&aacute;lisis completo de tu conexi&oacute;n a internet</div>
+
+    <!-- Info section (visible al abrir) -->
+    <div id="netInfoSection">
+      <div class="net-info-grid">
+        <div class="net-info-item"><div class="net-info-lbl">IP Local</div><div class="net-info-val" id="netLocalIP">&hellip;</div></div>
+        <div class="net-info-item"><div class="net-info-lbl">IP P&uacute;blica</div><div class="net-info-val" id="netPublicIP">&hellip;</div></div>
+        <div class="net-info-item"><div class="net-info-lbl">Red</div><div class="net-info-val" id="netSSID">&hellip;</div></div>
+        <div class="net-info-item"><div class="net-info-lbl">DNS</div><div class="net-info-val" id="netDNS">&hellip;</div></div>
+      </div>
+      <div style="display:flex;align-items:center;margin-bottom:16px;font-size:13px;font-weight:600;color:var(--txt)">
+        <span class="net-conn-dot" id="netDot"></span><span id="netStatusTxt">Verificando&hellip;</span>
+      </div>
+    </div>
+
+    <!-- Botón iniciar (visible al abrir) -->
+    <div id="netStartSection">
+      <button class="btn btn-p" style="width:100%;padding:11px;border-radius:10px;font-size:14px" onclick="startNetTest()">Iniciar Test</button>
+    </div>
+
+    <!-- Progreso + resultados (oculto al inicio) -->
+    <div id="netTestBody" style="display:none">
+      <div class="net-prog-wrap">
+        <div class="net-prog-top">
+          <span class="net-prog-step" id="netStepLabel">Iniciando&hellip;</span>
+          <span class="net-prog-pct"  id="netPctLabel">0%</span>
+        </div>
+        <div class="net-prog-track"><div class="net-prog-fill" id="netProgFill"></div></div>
+      </div>
+      <div id="netResults"></div>
+    </div>
+
+    <!-- Resumen final (oculto al inicio) -->
+    <div id="netSummaryEl" style="display:none"></div>
+    <div id="netRepeatSection" style="display:none;margin-top:12px">
+      <button class="btn btn-s" style="width:100%;padding:10px;border-radius:10px" onclick="startNetTest()">&#x1F504; Repetir Test</button>
+    </div>
   </div>
 </div>
 
@@ -3497,6 +3819,220 @@ function updateTemps() {
 
     el.innerHTML = html;
   }).catch(function() {});
+}
+
+// ── Pulso de Red modal ────────────────────────────────────────────────────────
+function openNetModal() {
+  document.getElementById('netModal').classList.add('open');
+  document.getElementById('netInfoSection').style.display   = '';
+  document.getElementById('netStartSection').style.display  = '';
+  document.getElementById('netTestBody').style.display      = 'none';
+  document.getElementById('netSummaryEl').style.display     = 'none';
+  document.getElementById('netRepeatSection').style.display = 'none';
+  document.getElementById('netResults').innerHTML           = '';
+  document.getElementById('netLocalIP').textContent   = '…';
+  document.getElementById('netPublicIP').textContent  = '…';
+  document.getElementById('netSSID').textContent      = '…';
+  document.getElementById('netDNS').textContent       = '…';
+  document.getElementById('netDot').className         = 'net-conn-dot';
+  document.getElementById('netStatusTxt').textContent = 'Verificando…';
+  if (!window.pywebview || !window.pywebview.api) return;
+  window.pywebview.api.get_net_info().then(function(raw) {
+    try {
+      var d = JSON.parse(raw);
+      if (d.error) return;
+      document.getElementById('netLocalIP').textContent  = d.local_ip  || '—';
+      document.getElementById('netPublicIP').textContent = d.public_ip || '—';
+      document.getElementById('netSSID').textContent     = d.network   || '—';
+      var dns2 = (d.dns_secondary && d.dns_secondary !== 'N/A') ? ' / ' + d.dns_secondary : '';
+      document.getElementById('netDNS').textContent      = (d.dns_primary || 'N/A') + dns2;
+      if (d.connected) {
+        document.getElementById('netDot').className         = 'net-conn-dot ok';
+        document.getElementById('netStatusTxt').textContent = 'Conectado';
+      } else {
+        document.getElementById('netDot').className         = 'net-conn-dot err';
+        document.getElementById('netStatusTxt').textContent = 'Sin conexión';
+      }
+    } catch(e) {}
+  }).catch(function() {});
+}
+
+function closeNetModal() {
+  document.getElementById('netModal').classList.remove('open');
+  if (window.pywebview && window.pywebview.api) window.pywebview.api.cancel_net_test();
+}
+function closeNetOv(e) {
+  if (e.target === document.getElementById('netModal')) closeNetModal();
+}
+
+function startNetTest() {
+  if (!window.pywebview || !window.pywebview.api) return;
+  document.getElementById('netInfoSection').style.display   = 'none';
+  document.getElementById('netStartSection').style.display  = 'none';
+  document.getElementById('netRepeatSection').style.display = 'none';
+  document.getElementById('netSummaryEl').style.display     = 'none';
+  document.getElementById('netTestBody').style.display      = '';
+  document.getElementById('netResults').innerHTML           = '';
+  document.getElementById('netProgFill').style.width        = '0%';
+  document.getElementById('netStepLabel').textContent       = 'Iniciando…';
+  document.getElementById('netPctLabel').textContent        = '0%';
+  window.pywebview.api.start_net_test();
+}
+
+function netUpdateProgress(pct, label) {
+  var f = document.getElementById('netProgFill');
+  var l = document.getElementById('netStepLabel');
+  var p = document.getElementById('netPctLabel');
+  if (f) f.style.width  = pct + '%';
+  if (l) l.textContent  = label;
+  if (p) p.textContent  = pct + '%';
+}
+
+function _nspC(v) {
+  if (v == null) return '#6B7280';
+  if (v > 50) return '#22C55E';
+  if (v > 20) return '#1A56C4';
+  if (v > 10) return '#F59E0B';
+  if (v > 5)  return '#F97316';
+  return '#EF4444';
+}
+function _nspL(v) {
+  if (v == null) return 'Sin datos';
+  if (v > 50) return 'Excelente';
+  if (v > 20) return 'Bueno';
+  if (v > 10) return 'Aceptable';
+  if (v > 5)  return 'Lento';
+  return 'Muy lento';
+}
+function _npC(v) {
+  if (v == null) return '#6B7280';
+  if (v < 20)  return '#22C55E';
+  if (v < 50)  return '#1A56C4';
+  if (v < 100) return '#F59E0B';
+  if (v < 200) return '#F97316';
+  return '#EF4444';
+}
+function _npL(v) {
+  if (v == null) return 'Sin datos';
+  if (v < 20)  return 'Excelente';
+  if (v < 50)  return 'Muy bueno';
+  if (v < 100) return 'Aceptable';
+  if (v < 200) return 'Lento';
+  return 'Muy lento';
+}
+function _njC(v) {
+  if (v < 5)  return '#22C55E';
+  if (v < 20) return '#F59E0B';
+  return '#EF4444';
+}
+
+function netOnStep(data) {
+  var el = document.getElementById('netResults');
+  if (!el) return;
+  var card = document.createElement('div');
+  card.className = 'net-step-card';
+  var h = '';
+  if (data.type === 'ping') {
+    var col = _npC(data.avg_ms), lbl = _npL(data.avg_ms);
+    var srvHtml = (data.servers || []).map(function(s) {
+      var c = s.ok ? _npC(s.ms) : '#6B7280';
+      return '<div class="net-ping-item">'
+           + '<div class="net-ping-srv">' + s.server + '</div>'
+           + '<div class="net-ping-ms" style="color:' + c + '">' + (s.ok ? s.ms + ' ms' : '—') + '</div>'
+           + '</div>';
+    }).join('');
+    h = '<div class="net-step-hdr">'
+      + '<span class="net-step-name">Latencia / Ping</span>'
+      + '<span class="net-step-badge" style="background:' + col + '22;color:' + col + '">' + lbl + '</span>'
+      + '</div>'
+      + '<div class="net-step-main" style="color:' + col + '">'
+      + (data.avg_ms != null ? data.avg_ms : '—')
+      + '<span class="net-step-unit"> ms</span></div>'
+      + '<div class="net-ping-grid">' + srvHtml + '</div>';
+  } else if (data.type === 'download') {
+    if (data.mbps != null) {
+      var col = _nspC(data.mbps), lbl = _nspL(data.mbps);
+      h = '<div class="net-step-hdr">'
+        + '<span class="net-step-name">&#x2193; Descarga</span>'
+        + '<span class="net-step-badge" style="background:' + col + '22;color:' + col + '">' + lbl + '</span>'
+        + '</div>'
+        + '<div class="net-step-main" style="color:' + col + '">'
+        + data.mbps + '<span class="net-step-unit"> Mbps</span></div>'
+        + '<div class="net-step-sub">10 MB descargados</div>';
+    } else {
+      h = '<div class="net-step-hdr">'
+        + '<span class="net-step-name">&#x2193; Descarga</span>'
+        + '<span class="net-step-badge" style="background:#EF444422;color:#B91C1C">Sin datos</span>'
+        + '</div>'
+        + '<div class="net-step-main" style="color:#EF4444">Error de conexión</div>'
+        + '<div class="net-step-sub" style="color:#B91C1C;font-size:11px">' + (data.error || 'No se pudo conectar') + '</div>';
+    }
+  } else if (data.type === 'upload') {
+    if (data.mbps != null) {
+      var col = _nspC(data.mbps), lbl = _nspL(data.mbps);
+      h = '<div class="net-step-hdr">'
+        + '<span class="net-step-name">&#x2191; Subida</span>'
+        + '<span class="net-step-badge" style="background:' + col + '22;color:' + col + '">' + lbl + '</span>'
+        + '</div>'
+        + '<div class="net-step-main" style="color:' + col + '">'
+        + data.mbps + '<span class="net-step-unit"> Mbps</span></div>'
+        + '<div class="net-step-sub">5 MB enviados</div>';
+    } else {
+      h = '<div class="net-step-hdr">'
+        + '<span class="net-step-name">&#x2191; Subida</span>'
+        + '<span class="net-step-badge" style="background:#EF444422;color:#B91C1C">Sin datos</span>'
+        + '</div>'
+        + '<div class="net-step-main" style="color:#EF4444">Error de conexión</div>'
+        + '<div class="net-step-sub" style="color:#B91C1C;font-size:11px">' + (data.error || 'No se pudo conectar') + '</div>';
+    }
+  } else if (data.type === 'jitter') {
+    var col = _njC(data.ms);
+    var lbl = data.ms < 5 ? 'Estable' : (data.ms < 20 ? 'Moderado' : 'Inestable');
+    h = '<div class="net-step-hdr">'
+      + '<span class="net-step-name">Jitter</span>'
+      + '<span class="net-step-badge" style="background:' + col + '22;color:' + col + '">' + lbl + '</span>'
+      + '</div>'
+      + '<div class="net-step-main" style="color:' + col + '">'
+      + data.ms + '<span class="net-step-unit"> ms</span></div>'
+      + '<div class="net-step-sub">Variación entre pings (máx − mín)</div>';
+  }
+  card.innerHTML = h;
+  el.appendChild(card);
+}
+
+function netOnDone(data) {
+  document.getElementById('netTestBody').style.display      = 'none';
+  document.getElementById('netSummaryEl').style.display     = '';
+  document.getElementById('netRepeatSection').style.display = '';
+  var sum = document.getElementById('netSummaryEl');
+  if (data.error) {
+    sum.innerHTML = '<div class="thermo-unavail">&#x26A0;&#xFE0F; Error: ' + data.error + '</div>';
+    return;
+  }
+  var dl = data.download_mbps, ul = data.upload_mbps;
+  var ping = data.ping_avg,    jitter = data.jitter;
+  var dlC = _nspC(dl), ulC = _nspC(ul), pC = _npC(ping), jC = _njC(jitter != null ? jitter : 0);
+  var qMap = {
+    excellent: { e: '🟢', t: 'Conexión Excelente', bg: 'rgba(34,197,94,.12)',  c: '#15803D' },
+    good:      { e: '🟡', t: 'Conexión Aceptable', bg: 'rgba(245,158,11,.15)', c: '#B45309' },
+    slow:      { e: '🔴', t: 'Conexión Lenta',      bg: 'rgba(239,68,68,.12)',  c: '#B91C1C' },
+  };
+  var q = qMap[data.quality] || qMap.slow;
+  sum.innerHTML = '<div class="net-summary-wrap">'
+    + '<div class="net-badge-glob" style="background:' + q.bg + ';color:' + q.c + '">' + q.e + ' ' + q.t + '</div>'
+    + '<div class="net-sum-speeds">'
+    + '<div class="net-sum-side"><div class="net-sum-arrow" style="color:' + dlC + '">&#x2193;</div>'
+    + '<div class="net-sum-big" style="color:' + dlC + '">' + (dl != null ? dl : '—') + '</div>'
+    + '<div class="net-sum-lbl">Mbps descarga</div></div>'
+    + '<div class="net-sum-side"><div class="net-sum-arrow" style="color:' + ulC + '">&#x2191;</div>'
+    + '<div class="net-sum-big" style="color:' + ulC + '">' + (ul != null ? ul : '—') + '</div>'
+    + '<div class="net-sum-lbl">Mbps subida</div></div>'
+    + '</div>'
+    + '<div class="net-sum-stats">'
+    + '<div class="net-sum-stat"><div class="net-sum-sv" style="color:' + pC + '">' + (ping != null ? ping + ' ms' : '—') + '</div><div class="net-sum-sl">Latencia</div></div>'
+    + '<div class="net-sum-stat"><div class="net-sum-sv" style="color:' + jC + '">' + (jitter != null ? jitter + ' ms' : '—') + '</div><div class="net-sum-sl">Jitter</div></div>'
+    + '</div>'
+    + '</div>';
 }
 
 window.addEventListener('resize', () => { _drawCPUFrame(_cpuDisp); drawRAM(_lastRamPct); });
