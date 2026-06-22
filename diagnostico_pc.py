@@ -2433,7 +2433,7 @@ html[data-theme="light"] {
 
 /* ── Base ── */
 * { box-sizing: border-box; margin: 0; padding: 0; }
-html { height: 100%; }
+html { height: 100%; overflow-y: auto; overflow-x: hidden; }
 html[data-theme="dark"]  { background: #0A0A0F; }
 html[data-theme="light"] { background: var(--bg-gradient) fixed; }
 
@@ -2443,10 +2443,11 @@ body {
   font-family: var(--font-ui);
   font-size: var(--text-body);
   line-height: 1.6;
-  height: 100vh;
+  min-height: 100vh;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  overflow-y: auto;
+  overflow-x: hidden;
   -webkit-user-select: none;
   -webkit-font-smoothing: antialiased;
 }
@@ -4694,6 +4695,12 @@ function abrirModalADN() {
 }
 
 window.addEventListener('resize', () => { _drawCPUFrame(_cpuDisp); drawRAM(_lastRamPct); });
+</script>
+
+<script>
+document.addEventListener('wheel', function(e) {
+  window.scrollBy({ top: e.deltaY * 1.5, behavior: 'smooth' });
+}, { passive: true });
 </script>
 </body>
 </html>
