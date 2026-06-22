@@ -2790,11 +2790,14 @@ html[data-theme="dark"] .btn-t { background:rgba(75,158,255,.15); color:#4B9EFF;
   border: 1.5px solid rgba(255,255,255,0.45);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
-  color: #ffffff;
+  color: #ffffff !important;
   border-radius: 10px;
   padding: 8px 18px;
+  font-family: 'Plus Jakarta Sans', sans-serif;
   font-weight: 600;
   font-size: 14px;
+  letter-spacing: 0;
+  text-shadow: none;
   cursor: pointer;
   transition: background 0.2s ease, border 0.2s ease;
 }
