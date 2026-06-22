@@ -21,6 +21,7 @@ python -m PyInstaller `
     --hidden-import winreg `
     --add-data "assets;assets" `
     --add-data "tools;tools" `
+    --add-data "tools/LibreHardwareMonitor;tools/LibreHardwareMonitor" `
     --clean `
     --noconfirm `
     "diagnostico_pc.py"

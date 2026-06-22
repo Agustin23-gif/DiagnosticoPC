@@ -1314,6 +1314,79 @@ class Api:
         except Exception as e:
             return json.dumps({"error": str(e)})
 
+    def get_temperatures(self):
+        try:
+            import os as _os, sys as _sys, subprocess as _sp, time as _time
+            import psutil as _ps, wmi as _wmi
+
+            # Locate LibreHardwareMonitor
+            # PyInstaller extracts --add-data files to sys._MEIPASS, not next to the .exe
+            if getattr(_sys, 'frozen', False):
+                base_path = _sys._MEIPASS
+            else:
+                base_path = _os.path.dirname(_os.path.abspath(__file__))
+            lhm_path = _os.path.join(base_path, 'tools', 'LibreHardwareMonitor', 'LibreHardwareMonitor.exe')
+
+            # Check if LHM is already running
+            lhm_running = any(
+                p.info.get('name') and 'LibreHardwareMonitor' in p.info['name']
+                for p in _ps.process_iter(['name'])
+            )
+
+            if not lhm_running:
+                if not _os.path.exists(lhm_path):
+                    return json.dumps({"error": "LibreHardwareMonitor.exe no encontrado en tools/"})
+                _sp.Popen([lhm_path], creationflags=_sp.CREATE_NO_WINDOW)
+                _time.sleep(3)  # let WMI namespace register
+
+            # Connect to WMI namespace (up to 5 s total)
+            sensors_list = None
+            deadline = _time.time() + 5
+            while _time.time() < deadline:
+                try:
+                    w = _wmi.WMI(namespace="root/LibreHardwareMonitor")
+                    sensors_list = list(w.Sensor())
+                    break
+                except Exception:
+                    _time.sleep(0.5)
+
+            if sensors_list is None:
+                return json.dumps({"starting": True})
+
+            cpu_cores = []
+            gpu_sensors = []
+            _CPU_KW = ("cpu", "core", "package", "tdie", "tctl", "ccd")
+            _GPU_KW = ("gpu", "video", "3d")
+
+            for s in sensors_list:
+                if s.SensorType != "Temperature" or s.Value is None:
+                    continue
+                name = str(s.Name)
+                val  = round(float(s.Value), 1)
+                nl   = name.lower()
+                if any(k in nl for k in _CPU_KW):
+                    cpu_cores.append({"name": name, "value": val})
+                elif any(k in nl for k in _GPU_KW):
+                    gpu_sensors.append({"name": name, "value": val})
+
+            cpu_data = None
+            if cpu_cores:
+                vals = [c["value"] for c in cpu_cores]
+                cpu_data = {
+                    "cores": cpu_cores,
+                    "avg":  round(sum(vals) / len(vals), 1),
+                    "peak": max(vals),
+                }
+
+            return json.dumps({
+                "starting": False,
+                "cpu": cpu_data,
+                "gpu": gpu_sensors if gpu_sensors else None,
+            })
+        except Exception as e:
+            import traceback
+            return json.dumps({"error": str(e), "trace": traceback.format_exc()})
+
     @staticmethod
     def _get_programas():
         if not _HAS_WINREG:
@@ -2181,6 +2254,30 @@ html[data-theme="dark"] .btn-wh-run:hover:not(:disabled) { background:rgba(0,57,
 .sw-card-btns { display: flex; gap: 8px; flex-wrap: wrap; }
 .btn-sw { flex: 1; min-width: 110px; padding: 8px 12px; border-radius: var(--radius-sm); border: 1px solid var(--card-bd); background: transparent; color: var(--brand); font-family: var(--font-ui); font-size: 11.5px; font-weight: 600; cursor: pointer; transition: background .2s, transform .1s; text-align: center; white-space: nowrap; }
 .btn-sw:hover { background: rgba(0,57,166,.07); }
+/* ── Termómetro button variant ── */
+.btn-t { background:transparent; border:1px solid var(--card-bd); color:var(--txt); }
+.btn-t:hover { background:rgba(239,68,68,.08); border-color:rgba(239,68,68,.4); color:#EF4444; }
+html[data-theme="dark"] .btn-t:hover { background:rgba(239,68,68,.12); }
+/* ── Termómetro modal ── */
+.thermo-row { padding:12px 0; border-bottom:1px solid var(--card-bd); }
+.thermo-row:last-child { border-bottom:none; }
+.thermo-info { display:flex; align-items:baseline; gap:8px; margin-bottom:6px; }
+.thermo-name { font-size:13px; font-weight:600; color:var(--txt); }
+.thermo-chip { font-size:11px; color:var(--txt2); font-family:var(--font-mono); }
+.thermo-right { display:flex; align-items:center; gap:8px; margin-bottom:6px; }
+.thermo-val  { font-size:22px; font-weight:700; line-height:1; }
+.thermo-badge { font-size:10px; font-weight:600; padding:2px 8px; border-radius:20px; }
+.thermo-bar-track { height:6px; background:var(--bar-track); border-radius:99px; overflow:hidden; }
+.thermo-bar-fill  { height:100%; border-radius:99px; transition:width .4s ease; }
+.thermo-bar-grad  { background:linear-gradient(90deg, #3B82F6 0%, #22C55E 40%, #F59E0B 70%, #EF4444 100%) !important; }
+.thermo-unavail { text-align:center; padding:32px 16px; color:var(--txt2); font-size:13px; line-height:1.6; }
+.thermo-card { border:1px solid var(--card-bd); border-radius:14px; padding:16px; }
+.thermo-card-hdr { font-size:12px; font-weight:700; letter-spacing:.6px; text-transform:uppercase; color:var(--txt2); margin-bottom:8px; }
+.thermo-cores { display:flex; flex-direction:column; gap:5px; }
+.thermo-core-row { display:flex; align-items:center; gap:8px; }
+.thermo-core-name { font-size:11px; color:var(--txt2); min-width:90px; flex-shrink:0; }
+.thermo-core-bar { flex:1; }
+.thermo-core-val { font-size:11px; font-weight:700; min-width:44px; text-align:right; flex-shrink:0; }
 .btn-sw:active { transform: scale(.97); }
 html[data-theme="dark"] .btn-sw { color: #5B8FE8; border-color: #2A2A3E; }
 html[data-theme="dark"] .btn-sw:hover { background: rgba(91,143,232,.1); }
@@ -2288,6 +2385,7 @@ html[data-theme="dark"] .status-pill.crit { background:rgba(239,68,68,.15); }
 <div class="diag-actions">
   <button class="btn btn-p" id="btnGenVisual" onclick="doGenVisual()">&#x1F4CA; Generar Reporte Visual</button>
   <button class="btn btn-s" id="btnOpenFolder" onclick="doOpenFolder()" style="display:none">&#x1F5BC;&#xFE0F; Abrir Reporte</button>
+  <button class="btn btn-t" onclick="openThermoModal()">&#x1F321;&#xFE0F; Term&oacute;metro</button>
 </div>
 <div class="rep-wrap">
   <div class="rep-body">
@@ -2469,6 +2567,15 @@ html[data-theme="dark"] .status-pill.crit { background:rgba(239,68,68,.15); }
       <button class="btn-chk-confirm-no" onclick="closeNiniteModal()">Cancelar</button>
       <button class="btn-wu-confirm" id="btnNinite" onclick="confirmNinite()">Iniciar</button>
     </div>
+  </div>
+</div>
+
+<div id="thermoModal" class="modal-ov" onclick="closeThermoOv(event)">
+  <div class="chk-modal-card" style="max-width:480px">
+    <button class="modal-x" onclick="closeThermoModal()">&#x2715;</button>
+    <div style="font-size:16px;font-weight:700;margin-bottom:4px;color:var(--txt)">&#x1F321;&#xFE0F; Term&oacute;metro del Sistema</div>
+    <div style="font-size:12px;color:var(--txt2);margin-bottom:16px">Temperaturas en tiempo real &mdash; actualizaci&oacute;n cada 2 s</div>
+    <div id="thermoList"><div class="modal-loading">Leyendo sensores&hellip;</div></div>
   </div>
 </div>
 
@@ -3191,6 +3298,123 @@ function confirmNinite() {
     el.style.display = 'block'; el.textContent = '⚠️ Error: ' + err;
     btn.disabled = false; btn.textContent = 'Reintentar';
   });
+}
+
+// ── Termómetro modal ──────────────────────────────────────────────────────
+var _thermoInterval = null;
+
+function openThermoModal() {
+  document.getElementById('thermoModal').classList.add('open');
+  updateTemps();
+  _thermoInterval = setInterval(updateTemps, 2000);
+}
+
+function closeThermoModal() {
+  document.getElementById('thermoModal').classList.remove('open');
+  if (_thermoInterval) { clearInterval(_thermoInterval); _thermoInterval = null; }
+}
+
+function closeThermoOv(e) {
+  if (e.target === document.getElementById('thermoModal')) closeThermoModal();
+}
+
+function _tempColor(v) {
+  if (v < 50) return '#3B82F6';
+  if (v < 70) return '#22C55E';
+  if (v < 85) return '#F59E0B';
+  return '#EF4444';
+}
+function _tempLabel(v) {
+  if (v < 50) return '&#x2744;&#xFE0F; Fr&iacute;o';
+  if (v < 70) return '&#x2705; Normal';
+  if (v < 85) return '&#x1F536; Caliente';
+  return '&#x1F534; Cr&iacute;tico &mdash; Revisar ventilaci&oacute;n';
+}
+
+function updateTemps() {
+  if (!window.pywebview || !window.pywebview.api) return;
+  window.pywebview.api.get_temperatures().then(function(raw) {
+    var d = JSON.parse(raw);
+    var el = document.getElementById('thermoList');
+    if (!el) return;
+
+    if (d.error) {
+      el.innerHTML = '<div class="thermo-unavail"><div style="font-size:28px;margin-bottom:8px">&#x26A0;&#xFE0F;</div>'
+        + '<div style="font-weight:600;margin-bottom:4px">Error al leer sensores</div>'
+        + '<div style="font-size:11px;opacity:.7">' + d.error + '</div></div>';
+      return;
+    }
+    if (d.starting) {
+      el.innerHTML = '<div class="thermo-unavail">'
+        + '<div style="font-size:28px;margin-bottom:8px">&#x23F3;</div>'
+        + '<div style="font-weight:600;margin-bottom:4px">Iniciando sensores&hellip;</div>'
+        + '<div style="font-size:11px;opacity:.7">Intent&aacute; abrir el modal de nuevo en unos segundos.</div>'
+        + '</div>';
+      return;
+    }
+
+    var html = '';
+
+    // ── CPU card ──
+    if (d.cpu) {
+      var peak = d.cpu.peak, avg = d.cpu.avg;
+      var cl = _tempColor(peak), lbl = _tempLabel(peak);
+      var pct = Math.min(100, Math.max(0, peak));
+      html += '<div class="thermo-card">'
+            +   '<div class="thermo-card-hdr">&#x1F5A5;&#xFE0F; CPU</div>'
+            +   '<div style="text-align:center;margin:4px 0 2px">'
+            +     '<span style="font-size:72px;font-weight:800;line-height:1;color:' + cl + '">' + peak + '</span>'
+            +     '<span style="font-size:22px;font-weight:600;color:' + cl + '">&deg;C</span>'
+            +   '</div>'
+            +   '<div style="text-align:center;font-size:13px;font-weight:700;color:' + cl + ';margin-bottom:4px">' + lbl + '</div>'
+            +   '<div style="text-align:center;font-size:11px;color:var(--txt2);margin-bottom:10px">'
+            +     'Pico: ' + peak + '&deg;C &nbsp;&middot;&nbsp; Promedio: ' + avg + '&deg;C'
+            +   '</div>'
+            +   '<div class="thermo-bar-track" style="margin-bottom:14px">'
+            +     '<div class="thermo-bar-fill thermo-bar-grad" style="width:' + pct + '%"></div>'
+            +   '</div>';
+
+      if (d.cpu.cores && d.cpu.cores.length) {
+        html += '<div class="thermo-cores">';
+        d.cpu.cores.forEach(function(c) {
+          var cc = _tempColor(c.value);
+          var cp = Math.min(100, Math.max(0, c.value));
+          html += '<div class="thermo-core-row">'
+                +   '<span class="thermo-core-name">' + c.name + '</span>'
+                +   '<div class="thermo-bar-track thermo-core-bar"><div class="thermo-bar-fill" style="width:' + cp + '%;background:' + cc + '"></div></div>'
+                +   '<span class="thermo-core-val" style="color:' + cc + '">' + c.value + '&deg;C</span>'
+                + '</div>';
+        });
+        html += '</div>';
+      }
+      html += '</div>';
+    }
+
+    // ── GPU card ──
+    html += '<div class="thermo-card" style="margin-top:10px">'
+          +   '<div class="thermo-card-hdr">&#x1F3A6; GPU</div>';
+    if (d.gpu && d.gpu.length) {
+      d.gpu.forEach(function(g) {
+        var gc = _tempColor(g.value), gl = _tempLabel(g.value);
+        var gp = Math.min(100, Math.max(0, g.value));
+        html += '<div style="margin-bottom:10px">'
+              +   '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:5px">'
+              +     '<span class="thermo-name">' + g.name + '</span>'
+              +     '<span class="thermo-badge" style="background:' + gc + '22;color:' + gc + '">' + gl + '</span>'
+              +   '</div>'
+              +   '<div style="display:flex;align-items:center;gap:10px">'
+              +     '<div class="thermo-bar-track" style="flex:1"><div class="thermo-bar-fill" style="width:' + gp + '%;background:' + gc + '"></div></div>'
+              +     '<span style="font-size:16px;font-weight:700;color:' + gc + ';min-width:52px;text-align:right">' + g.value + '&deg;C</span>'
+              +   '</div>'
+              + '</div>';
+      });
+    } else {
+      html += '<div style="font-size:12px;color:var(--txt2);padding:6px 0">GPU integrada &mdash; sensores no disponibles</div>';
+    }
+    html += '</div>';
+
+    el.innerHTML = html;
+  }).catch(function() {});
 }
 
 window.addEventListener('resize', () => { _drawCPUFrame(_cpuDisp); drawRAM(_lastRamPct); });
