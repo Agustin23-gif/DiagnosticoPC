@@ -1474,12 +1474,53 @@ class Api:
         return json.dumps({"ok": True})
 
     def run_cleanup(self):
-        import threading as _thr
-        if getattr(self, '_clean_thread', None) and self._clean_thread.is_alive():
-            return json.dumps({"error": "Limpieza ya en curso"})
-        self._clean_thread = _thr.Thread(target=self._run_cleanup_worker, daemon=True)
-        self._clean_thread.start()
-        return json.dumps({"ok": True})
+        import os as _os, shutil as _sh
+        freed = 0
+
+        def _del_dir(path):
+            total = 0
+            try:
+                for item in _os.listdir(path):
+                    ip = _os.path.join(path, item)
+                    try:
+                        if _os.path.isfile(ip):
+                            total += _os.path.getsize(ip)
+                            _os.remove(ip)
+                        elif _os.path.isdir(ip):
+                            for dp, dn, fn in _os.walk(ip):
+                                for f in fn:
+                                    try:
+                                        total += _os.path.getsize(_os.path.join(dp, f))
+                                    except Exception:
+                                        pass
+                            _sh.rmtree(ip, ignore_errors=True)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            return total
+
+        # 1. %TEMP% del usuario
+        temp_user = _os.environ.get("TEMP", "")
+        if temp_user and _os.path.exists(temp_user):
+            freed += _del_dir(temp_user)
+
+        # 2. C:\Windows\Temp
+        win_temp = r"C:\Windows\Temp"
+        if _os.path.exists(win_temp):
+            freed += _del_dir(win_temp)
+
+        # 3. Papelera de reciclaje
+        try:
+            subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                 "Clear-RecycleBin -Force -ErrorAction SilentlyContinue"],
+                capture_output=True, timeout=30, **_NWIN
+            )
+        except Exception:
+            pass
+
+        return json.dumps({"freed": freed, "freed_fmt": _fb(freed)})
 
     def _analyze_cleanup_worker(self):
         import json as _j, os as _os, subprocess as _sp, sys as _sys
@@ -3155,32 +3196,10 @@ html[data-theme="light"] .clean-done-wrap { background:rgba(34,197,94,.06); bord
     <div style="font-size:16px;font-weight:700;margin-bottom:4px;color:var(--txt)">&#x1F9F9; Limpiar Sistema</div>
     <div style="font-size:12px;color:var(--txt2);margin-bottom:16px">Libera espacio eliminando archivos temporales y cach&eacute;</div>
 
-    <!-- Fase 1: Análisis por categoría -->
-    <div id="cleanAnalyzeSection">
-      <div id="cleanAnalyzeBody">
-        <div class="modal-loading">&#x1F50D; Analizando sistema&hellip;</div>
-      </div>
+    <!-- Fase 1: Análisis + botón (todo en cleanAnalyzeBody) -->
+    <div id="cleanAnalyzeBody">
+      <div class="modal-loading">&#x1F50D; Analizando sistema&hellip;</div>
     </div>
-
-    <!-- Botón confirmar limpieza (aparece al terminar análisis) -->
-    <div id="cleanActionSection" style="display:none;margin-top:14px">
-      <button class="btn btn-p" style="width:100%;padding:11px;border-radius:10px;font-size:14px" onclick="startClean()">&#x1F9F9; Limpiar Ahora</button>
-    </div>
-
-    <!-- Fase 2: Limpieza en progreso -->
-    <div id="cleanRunSection" style="display:none">
-      <div class="net-prog-wrap" style="margin-top:4px">
-        <div class="net-prog-top">
-          <span class="net-prog-step" id="cleanStepLabel">Iniciando&hellip;</span>
-          <span class="net-prog-pct"  id="cleanPctLabel">0%</span>
-        </div>
-        <div class="net-prog-track"><div class="net-prog-fill" id="cleanProgFill"></div></div>
-      </div>
-      <div id="cleanRunDetails" style="margin-top:10px"></div>
-    </div>
-
-    <!-- Resultado final -->
-    <div id="cleanDoneSection" style="display:none;margin-top:8px"></div>
   </div>
 </div>
 
@@ -4276,12 +4295,7 @@ var _cleanCats = [];
 
 function limpiarSistema() {
   document.getElementById('cleanModal').classList.add('open');
-  document.getElementById('cleanAnalyzeSection').style.display = '';
-  document.getElementById('cleanAnalyzeBody').innerHTML        = '<div class="modal-loading">&#x1F50D; Analizando sistema&hellip;</div>';
-  document.getElementById('cleanActionSection').style.display  = 'none';
-  document.getElementById('cleanRunSection').style.display     = 'none';
-  document.getElementById('cleanDoneSection').style.display    = 'none';
-  document.getElementById('cleanRunDetails').innerHTML         = '';
+  document.getElementById('cleanAnalyzeBody').innerHTML = '<div class="modal-loading">&#x1F50D; Analizando sistema&hellip;</div>';
   _cleanCats = [];
   if (window.pywebview && window.pywebview.api) window.pywebview.api.analyze_cleanup();
 }
@@ -4290,8 +4304,7 @@ function closeCleanOv(e)   { if (e.target === document.getElementById('cleanModa
 
 function cleanOnCategoryResult(data) {
   _cleanCats.push(data);
-  var el = document.getElementById('cleanAnalyzeBody');
-  el.innerHTML = _cleanCats.map(function(c) {
+  document.getElementById('cleanAnalyzeBody').innerHTML = _cleanCats.map(function(c) {
     return '<div class="clean-cat-row">'
          + '<span class="clean-cat-icon">' + c.icon + '</span>'
          + '<span class="clean-cat-lbl">' + c.label + '</span>'
@@ -4301,9 +4314,9 @@ function cleanOnCategoryResult(data) {
 }
 
 function cleanOnAnalysisDone(data) {
+  var el = document.getElementById('cleanAnalyzeBody');
   if (data.error) {
-    document.getElementById('cleanAnalyzeBody').innerHTML =
-      '<div class="modal-loading" style="color:var(--error)">&#x26A0;&#xFE0F; Error: ' + data.error + '</div>';
+    el.innerHTML = '<div class="modal-loading" style="color:var(--error)">&#x26A0;&#xFE0F; Error: ' + data.error + '</div>';
     return;
   }
   var html = (data.categories || []).map(function(c) {
@@ -4313,53 +4326,47 @@ function cleanOnAnalysisDone(data) {
          + '<span class="clean-cat-size">' + c.size + '</span>'
          + '</div>';
   }).join('');
-  html += '<div class="clean-total-row">'
-        + '<span style="font-weight:700;color:var(--txt)">Total a liberar</span>'
-        + '<span class="clean-total-size">' + data.total + '</span>'
-        + '</div>';
-  document.getElementById('cleanAnalyzeBody').innerHTML = html;
-  document.getElementById('cleanActionSection').style.display = '';
+  html += '<div class="clean-total-row"><span style="font-weight:700;color:var(--txt)">Total a liberar</span>'
+        + '<span class="clean-total-size">' + data.total + '</span></div>';
+  html += '<button id="cleanBtn" class="btn btn-p" style="width:100%;margin-top:14px;padding:11px;border-radius:10px;font-size:14px" onclick="doClean()">'
+        + '&#x1F9F9; Limpiar Ahora</button>';
+  html += '<div id="cleanResultEl" style="margin-top:10px"></div>';
+  el.innerHTML = html;
 }
 
-function startClean() {
-  document.getElementById('cleanAnalyzeSection').style.display = 'none';
-  document.getElementById('cleanActionSection').style.display  = 'none';
-  document.getElementById('cleanRunSection').style.display     = '';
-  document.getElementById('cleanDoneSection').style.display    = 'none';
-  document.getElementById('cleanProgFill').style.width         = '0%';
-  document.getElementById('cleanStepLabel').textContent        = 'Iniciando…';
-  document.getElementById('cleanPctLabel').textContent         = '0%';
-  document.getElementById('cleanRunDetails').innerHTML         = '';
-  if (window.pywebview && window.pywebview.api) window.pywebview.api.run_cleanup();
-}
-
-function cleanUpdateProgress(pct, label) {
-  document.getElementById('cleanProgFill').style.width  = pct + '%';
-  document.getElementById('cleanStepLabel').textContent = label;
-  document.getElementById('cleanPctLabel').textContent  = pct + '%';
-}
-
-function cleanOnStep(data) {
-  var row = document.createElement('div');
-  row.className = 'clean-step-row';
-  row.innerHTML = '<span class="clean-step-lbl">&#x2705; ' + data.label + '</span>'
-                + '<span class="clean-step-val">' + data.freed + '</span>';
-  document.getElementById('cleanRunDetails').appendChild(row);
-}
-
-function cleanOnDone(data) {
-  document.getElementById('cleanRunSection').style.display  = 'none';
-  document.getElementById('cleanDoneSection').style.display = '';
-  var el = document.getElementById('cleanDoneSection');
-  if (data.error) {
-    el.innerHTML = '<div class="modal-loading" style="color:var(--error)">&#x26A0;&#xFE0F; Error: ' + data.error + '</div>';
-    return;
-  }
-  el.innerHTML = '<div class="clean-done-wrap">'
-               + '<div class="clean-done-icon">&#x2705;</div>'
-               + '<div class="clean-done-title">Limpieza completada</div>'
-               + '<div class="clean-done-freed">Se liberaron <b>' + data.total + '</b></div>'
-               + '</div>';
+function doClean() {
+  var btn = document.getElementById('cleanBtn');
+  if (!btn || !window.pywebview || !window.pywebview.api) return;
+  btn.disabled = true;
+  btn.textContent = 'Limpiando…';
+  window.pywebview.api.run_cleanup().then(function(raw) {
+    try {
+      var d = JSON.parse(raw);
+      var res = document.getElementById('cleanResultEl');
+      if (d.error) {
+        res.innerHTML = '<div style="color:var(--error);font-size:13px">&#x26A0;&#xFE0F; ' + d.error + '</div>';
+        btn.disabled = false;
+        btn.innerHTML = '&#x1F9F9; Limpiar Ahora';
+        return;
+      }
+      res.innerHTML = '<div class="clean-done-wrap">'
+                    + '<div class="clean-done-icon">&#x2705;</div>'
+                    + '<div class="clean-done-title">Limpieza completada</div>'
+                    + '<div class="clean-done-freed">Se liberaron <b>' + (d.freed_fmt || '—') + '</b></div>'
+                    + '</div>';
+      btn.innerHTML  = 'Cerrar';
+      btn.disabled   = false;
+      btn.onclick    = function() { closeCleanModal(); };
+    } catch(e) {
+      document.getElementById('cleanResultEl').innerHTML = '<div style="color:var(--error)">Error inesperado</div>';
+      btn.disabled = false;
+    }
+  }).catch(function() {
+    var res = document.getElementById('cleanResultEl');
+    if (res) res.innerHTML = '<div style="color:var(--error)">Error al conectar con el backend</div>';
+    btn.disabled = false;
+    btn.innerHTML = '&#x1F9F9; Limpiar Ahora';
+  });
 }
 
 window.addEventListener('resize', () => { _drawCPUFrame(_cpuDisp); drawRAM(_lastRamPct); });
