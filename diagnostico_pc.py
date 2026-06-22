@@ -2584,10 +2584,22 @@ html[data-theme="dark"] .btn-wh-run:hover:not(:disabled) { background:rgba(0,57,
 .sw-card-btns { display: flex; gap: 8px; flex-wrap: wrap; }
 .btn-sw { flex: 1; min-width: 110px; padding: 8px 12px; border-radius: var(--radius-sm); border: 1px solid var(--card-bd); background: transparent; color: var(--brand); font-family: var(--font-ui); font-size: 11.5px; font-weight: 600; cursor: pointer; transition: background .2s, transform .1s; text-align: center; white-space: nowrap; }
 .btn-sw:hover { background: rgba(0,57,166,.07); }
-/* ── Termómetro button variant ── */
-.btn-t { background:var(--info-bg); border:none; color:var(--info-text); }
-.btn-t:hover { opacity:.80; }
-html[data-theme="dark"] .btn-t { background:rgba(75,158,255,.15); color:#4B9EFF; }
+/* ── Termómetro / Pulso de Red (glassmorphism) ── */
+.btn-t {
+  background: rgba(255,255,255,0.18);
+  border: 1.5px solid rgba(255,255,255,0.50);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  color: #ffffff;
+  font-size: 14px;
+  border-radius: 10px;
+  padding: 8px 18px;
+  text-shadow: 0 1px 3px rgba(0,0,0,0.15);
+  transition: background 0.2s ease, border-color 0.2s ease;
+}
+.btn-t:hover:not(:disabled) { background: rgba(255,255,255,0.30); border-color: rgba(255,255,255,0.70); opacity: 1; }
+html[data-theme="dark"] .btn-t { background: rgba(255,255,255,0.12); border-color: rgba(255,255,255,0.30); color: #ffffff; }
+html[data-theme="dark"] .btn-t:hover:not(:disabled) { background: rgba(255,255,255,0.22); border-color: rgba(255,255,255,0.50); }
 /* ── Termómetro modal ── */
 .thermo-row { padding:12px 0; border-bottom:1px solid var(--card-bd); }
 .thermo-row:last-child { border-bottom:none; }
