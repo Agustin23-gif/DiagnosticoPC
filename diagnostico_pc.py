@@ -3251,20 +3251,54 @@ html[data-theme="light"] .clean-done-wrap { background:rgba(34,197,94,.06); bord
     <button id="cleanLimpiarBtn"
             class="btn btn-p"
             style="display:none;width:100%;margin-top:14px;padding:11px;border-radius:10px;font-size:14px"
-            onclick="ejecutarLimpieza()">
+            onclick="limpiarAhora()">
       &#x1F9F9; Limpiar Ahora
     </button>
 
-    <!-- Resultado de la limpieza -->
-    <div id="cleanResultEl" style="display:none;margin-top:10px"></div>
+    <!-- Barra de progreso (oculta hasta que empieza la limpieza) -->
+    <div id="cleanup-progress" style="display:none;margin-top:20px;">
+      <div id="cleanup-status-text"
+           style="font-size:13px;color:var(--txt2);margin-bottom:10px;text-align:center;">
+        Limpiando&hellip;
+      </div>
+      <div style="background:var(--bar-track);border-radius:99px;overflow:hidden;height:10px;">
+        <div id="cleanup-bar"
+             style="width:0%;height:100%;border-radius:99px;
+                    background:linear-gradient(90deg,#3B5BDB,#1E3A8A);
+                    transition:width 0.4s ease;">
+        </div>
+      </div>
+    </div>
 
-    <!-- Botón Cerrar (post-limpieza) — siempre en el DOM -->
-    <button id="cleanCerrarBtn"
-            class="btn btn-s"
-            style="display:none;width:100%;margin-top:10px;padding:10px;border-radius:10px"
-            onclick="closeCleanModal()">
-      Cerrar
-    </button>
+    <!-- Mensaje final de éxito (oculto hasta que termina) -->
+    <div id="cleanup-final" style="display:none;text-align:center;padding:20px 0;">
+      <div style="width:72px;height:72px;border-radius:50%;
+                  background:linear-gradient(135deg,#3B5BDB,#1E3A8A);
+                  margin:0 auto 16px;display:flex;align-items:center;
+                  justify-content:center;font-size:36px;">
+        &#x1F4A5;
+      </div>
+      <div style="font-size:22px;font-weight:800;color:#1E3A8A;margin-bottom:8px;">
+        &iexcl;Archivos basura&hellip; desintegrados!
+      </div>
+      <div style="font-size:15px;color:var(--txt2);margin-bottom:6px;">
+        Limpieza completada exitosamente
+      </div>
+      <div style="font-size:28px;font-weight:700;color:#3B5BDB;margin:12px 0;">
+        <span id="cleanup-freed-amount">0 MB</span> liberados
+      </div>
+      <div style="font-size:13px;color:var(--txt2);margin-bottom:20px;">
+        Tu equipo opera al m&aacute;ximo ahora &#x1F680;
+      </div>
+      <button onclick="cerrarModalLimpieza()"
+              style="background:linear-gradient(135deg,#3B5BDB,#1E3A8A);
+                     color:#fff;border:none;border-radius:12px;
+                     padding:12px 32px;font-size:15px;font-weight:600;
+                     cursor:pointer;position:relative;z-index:99999;
+                     pointer-events:auto !important;">
+        Cerrar
+      </button>
+    </div>
   </div>
 </div>
 
@@ -4363,20 +4397,31 @@ function _fmtCleanBytes(b) {
   return b.toFixed(1) + ' ' + u[i];
 }
 
+function cerrarModalLimpieza() {
+  document.getElementById('cleanModal').classList.remove('open');
+  // Reset para la próxima apertura
+  document.getElementById('cleanup-progress').style.display        = 'none';
+  document.getElementById('cleanup-final').style.display           = 'none';
+  document.getElementById('cleanup-bar').style.width               = '0%';
+  document.getElementById('cleanup-status-text').textContent       = 'Limpiando…';
+}
+
+function closeCleanModal() { cerrarModalLimpieza(); }
+
 function limpiarSistema() {
-  // 1. Reset completo del modal
+  // Reset completo
   document.getElementById('cleanAnalyzeBody').innerHTML    = '<div class="modal-loading">&#x1F50D; Analizando sistema&hellip;</div>';
   document.getElementById('cleanTotalRow').style.display   = 'none';
   document.getElementById('cleanTotalVal').textContent     = '—';
   document.getElementById('cleanLimpiarBtn').style.display = 'none';
   document.getElementById('cleanLimpiarBtn').disabled      = false;
   document.getElementById('cleanLimpiarBtn').innerHTML     = '&#x1F9F9; Limpiar Ahora';
-  document.getElementById('cleanResultEl').style.display   = 'none';
-  document.getElementById('cleanResultEl').innerHTML       = '';
-  document.getElementById('cleanCerrarBtn').style.display  = 'none';
-  // 2. Abrir modal
+  document.getElementById('cleanup-progress').style.display = 'none';
+  document.getElementById('cleanup-final').style.display   = 'none';
+  document.getElementById('cleanup-bar').style.width       = '0%';
+  // Abrir modal
   document.getElementById('cleanModal').classList.add('open');
-  // 3. Llamar analyze_cleanup y manejar resultado en .then()
+  // Análisis
   if (!window.pywebview || !window.pywebview.api) { return; }
   window.pywebview.api.analyze_cleanup().then(function(raw) {
     var d;
@@ -4397,36 +4442,52 @@ function limpiarSistema() {
   });
 }
 
-function closeCleanModal() {
-  document.getElementById('cleanModal').classList.remove('open');
-}
+function limpiarAhora() {
+  document.getElementById('cleanLimpiarBtn').style.display    = 'none';
+  document.getElementById('cleanTotalRow').style.display      = 'none';
+  document.getElementById('cleanAnalyzeBody').style.display   = 'none';
+  document.getElementById('cleanup-progress').style.display   = 'block';
+  document.getElementById('cleanup-bar').style.width          = '0%';
 
-function ejecutarLimpieza() {
-  var btn = document.getElementById('cleanLimpiarBtn');
-  btn.disabled  = true;
-  btn.innerHTML = 'Limpiando&hellip;';
+  var etapas = [
+    { texto: '🗂 Desintegrando temporales del usuario...', pct: 25 },
+    { texto: '🗂 Desintegrando temporales de Windows...', pct: 55 },
+    { texto: '🗑 Desintegrando papelera de reciclaje...', pct: 80 },
+    { texto: '💥 Confirmando desintegración total...',     pct: 95 }
+  ];
+  var i = 0;
+  function avanzarEtapa() {
+    if (i < etapas.length) {
+      document.getElementById('cleanup-status-text').textContent = etapas[i].texto;
+      document.getElementById('cleanup-bar').style.width         = etapas[i].pct + '%';
+      i++;
+      setTimeout(avanzarEtapa, 900);
+    }
+  }
+  avanzarEtapa();
+
   if (!window.pywebview || !window.pywebview.api) { return; }
   window.pywebview.api.run_cleanup().then(function(raw) {
     var d;
     try { d = JSON.parse(raw); } catch(e) { d = {}; }
-    var res = document.getElementById('cleanResultEl');
-    if (d.error) {
-      res.innerHTML     = '<div style="color:var(--error);font-size:13px">&#x26A0;&#xFE0F; ' + d.error + '</div>';
-      res.style.display = '';
-      btn.disabled      = false;
-      btn.innerHTML     = '&#x1F9F9; Limpiar Ahora';
-      return;
-    }
-    var freed = d.freed_fmt || _fmtCleanBytes(d.freed || 0);
-    res.innerHTML = '<div class="clean-done-wrap">'
-                  + '<div class="clean-done-icon">&#x2705;</div>'
-                  + '<div class="clean-done-title">Limpieza completada</div>'
-                  + '<div class="clean-done-freed">Se liberaron <b>' + freed + '</b></div>'
-                  + '</div>';
-    res.style.display                                        = '';
-    btn.style.display                                        = 'none';
-    document.getElementById('cleanCerrarBtn').style.display = '';
+    document.getElementById('cleanup-bar').style.width = '100%';
+    setTimeout(function() {
+      mostrarResultadoLimpieza(d.freed || 0);
+    }, 500);
   });
+}
+
+function mostrarResultadoLimpieza(bytesFreed) {
+  var freed = bytesFreed || 0;
+  var texto;
+  if      (freed >= 1073741824) texto = (freed / 1073741824).toFixed(1) + ' GB';
+  else if (freed >= 1048576)    texto = (freed / 1048576).toFixed(1)    + ' MB';
+  else if (freed >= 1024)       texto = (freed / 1024).toFixed(1)       + ' KB';
+  else                          texto = freed + ' B';
+
+  document.getElementById('cleanup-progress').style.display      = 'none';
+  document.getElementById('cleanup-final').style.display         = 'block';
+  document.getElementById('cleanup-freed-amount').textContent    = texto;
 }
 
 window.addEventListener('resize', () => { _drawCPUFrame(_cpuDisp); drawRAM(_lastRamPct); });
