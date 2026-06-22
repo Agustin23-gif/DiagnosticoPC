@@ -2433,7 +2433,7 @@ html[data-theme="light"] {
 
 /* ── Base ── */
 * { box-sizing: border-box; margin: 0; padding: 0; }
-html { height: 100%; overflow-y: auto; overflow-x: hidden; }
+html { height: 100%; }
 html[data-theme="dark"]  { background: #0A0A0F; }
 html[data-theme="light"] { background: var(--bg-gradient) fixed; }
 
@@ -2443,13 +2443,19 @@ body {
   font-family: var(--font-ui);
   font-size: var(--text-body);
   line-height: 1.6;
-  min-height: 100vh;
+  height: 100vh;
   display: flex;
   flex-direction: column;
-  overflow-y: auto;
-  overflow-x: hidden;
+  overflow: hidden;
   -webkit-user-select: none;
   -webkit-font-smoothing: antialiased;
+}
+
+#main-content {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  min-height: 0;
 }
 
 /* ── Header ── */
@@ -3033,6 +3039,7 @@ html[data-theme="dark"] .adn-value { color: #e2e8f0; }
   </button>
 </header>
 
+<div id="main-content">
 <div class="section-label">MONITOREO EN TIEMPO REAL</div>
 <div class="metrics">
   <div class="card">
@@ -3124,6 +3131,7 @@ html[data-theme="dark"] .adn-value { color: #e2e8f0; }
   <div class="dot" id="dot"></div>
   <span id="sMsg">Listo &mdash; presion&aacute; Generar Reporte Visual para comenzar</span>
 </div>
+</div><!-- /#main-content -->
 
 <div id="diskModal" class="modal-ov" onclick="closeModalOv(event)">
   <div class="modal-card">
@@ -4698,12 +4706,6 @@ function abrirModalADN() {
 window.addEventListener('resize', () => { _drawCPUFrame(_cpuDisp); drawRAM(_lastRamPct); });
 </script>
 
-<script>
-document.addEventListener('wheel', function(e) {
-  if (document.querySelector('.modal-ov.open')) return;
-  window.scrollBy({ top: e.deltaY * 1.5, behavior: 'smooth' });
-}, { passive: true });
-</script>
 </body>
 </html>
 """
