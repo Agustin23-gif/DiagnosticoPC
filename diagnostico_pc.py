@@ -1316,67 +1316,61 @@ class Api:
 
     def get_temperatures(self):
         try:
-            import os as _os, sys as _sys, subprocess as _sp, time as _time
-            import psutil as _ps, wmi as _wmi
+            import os as _os, sys as _sys
 
-            # Locate LibreHardwareMonitor
-            # PyInstaller extracts --add-data files to sys._MEIPASS, not next to the .exe
             if getattr(_sys, 'frozen', False):
                 base_path = _sys._MEIPASS
             else:
                 base_path = _os.path.dirname(_os.path.abspath(__file__))
-            lhm_path = _os.path.join(base_path, 'tools', 'LibreHardwareMonitor', 'LibreHardwareMonitor.exe')
+            lhm_dir = _os.path.join(base_path, 'tools', 'LibreHardwareMonitor')
 
-            # Check if LHM is already running
-            lhm_running = any(
-                p.info.get('name') and 'LibreHardwareMonitor' in p.info['name']
-                for p in _ps.process_iter(['name'])
-            )
+            if not _os.path.isdir(lhm_dir):
+                return json.dumps({"error": "Carpeta tools/LibreHardwareMonitor no encontrada"})
 
-            if not lhm_running:
-                if not _os.path.exists(lhm_path):
-                    return json.dumps({"error": "LibreHardwareMonitor.exe no encontrado en tools/"})
-                _sp.Popen([lhm_path], creationflags=_sp.CREATE_NO_WINDOW)
-                _time.sleep(3)  # let WMI namespace register
+            # Keep Computer object alive on self to avoid re-init overhead every 2 s
+            if not getattr(self, '_lhm_computer', None):
+                import clr as _clr
+                if lhm_dir not in _sys.path:
+                    _sys.path.append(lhm_dir)
+                _clr.AddReference('LibreHardwareMonitorLib')
+                from LibreHardwareMonitor.Hardware import Computer as _Computer
+                comp = _Computer()
+                comp.IsCpuEnabled = True
+                comp.IsGpuEnabled = True
+                comp.Open()
+                self._lhm_computer = comp
 
-            # Connect to WMI namespace (up to 5 s total)
-            sensors_list = None
-            deadline = _time.time() + 5
-            while _time.time() < deadline:
-                try:
-                    w = _wmi.WMI(namespace="root/LibreHardwareMonitor")
-                    sensors_list = list(w.Sensor())
-                    break
-                except Exception:
-                    _time.sleep(0.5)
-
-            if sensors_list is None:
-                return json.dumps({"starting": True})
-
-            cpu_cores = []
+            cpu_max_val = None
+            cpu_avg_val = None
+            cpu_cores   = []
             gpu_sensors = []
-            _CPU_KW = ("cpu", "core", "package", "tdie", "tctl", "ccd")
-            _GPU_KW = ("gpu", "video", "3d")
 
-            for s in sensors_list:
-                if s.SensorType != "Temperature" or s.Value is None:
-                    continue
-                name = str(s.Name)
-                val  = round(float(s.Value), 1)
-                nl   = name.lower()
-                if any(k in nl for k in _CPU_KW):
-                    cpu_cores.append({"name": name, "value": val})
-                elif any(k in nl for k in _GPU_KW):
-                    gpu_sensors.append({"name": name, "value": val})
+            for hw in self._lhm_computer.Hardware:
+                hw.Update()
+                for s in hw.Sensors:
+                    if str(s.SensorType) != 'Temperature':
+                        continue
+                    try:
+                        val = round(float(s.Value), 1)
+                    except (TypeError, Exception):
+                        continue
+                    name = str(s.Name)
+                    if name == "Core Max":
+                        cpu_max_val = val
+                    elif name == "Core Average":
+                        cpu_avg_val = val
+                    elif "CPU Core #" in name and "Distance" not in name:
+                        cpu_cores.append({"name": name, "value": val})
+                    elif "GPU" in name:
+                        gpu_sensors.append({"name": name, "value": val})
 
             cpu_data = None
-            if cpu_cores:
-                vals = [c["value"] for c in cpu_cores]
-                cpu_data = {
-                    "cores": cpu_cores,
-                    "avg":  round(sum(vals) / len(vals), 1),
-                    "peak": max(vals),
-                }
+            if cpu_max_val is not None or cpu_cores:
+                if cpu_max_val is None and cpu_cores:
+                    cpu_max_val = max(c["value"] for c in cpu_cores)
+                if cpu_avg_val is None and cpu_cores:
+                    cpu_avg_val = round(sum(c["value"] for c in cpu_cores) / len(cpu_cores), 1)
+                cpu_data = {"max": cpu_max_val, "avg": cpu_avg_val, "cores": cpu_cores}
 
             return json.dumps({
                 "starting": False,
@@ -1384,6 +1378,7 @@ class Api:
                 "gpu": gpu_sensors if gpu_sensors else None,
             })
         except Exception as e:
+            self._lhm_computer = None  # reset so next call retries init
             import traceback
             return json.dumps({"error": str(e), "trace": traceback.format_exc()})
 
@@ -2273,11 +2268,12 @@ html[data-theme="dark"] .btn-t:hover { background:rgba(239,68,68,.12); }
 .thermo-unavail { text-align:center; padding:32px 16px; color:var(--txt2); font-size:13px; line-height:1.6; }
 .thermo-card { border:1px solid var(--card-bd); border-radius:14px; padding:16px; }
 .thermo-card-hdr { font-size:12px; font-weight:700; letter-spacing:.6px; text-transform:uppercase; color:var(--txt2); margin-bottom:8px; }
-.thermo-cores { display:flex; flex-direction:column; gap:5px; }
-.thermo-core-row { display:flex; align-items:center; gap:8px; }
-.thermo-core-name { font-size:11px; color:var(--txt2); min-width:90px; flex-shrink:0; }
-.thermo-core-bar { flex:1; }
-.thermo-core-val { font-size:11px; font-weight:700; min-width:44px; text-align:right; flex-shrink:0; }
+.thermo-cores-grid { display:grid; grid-template-columns:repeat(2,1fr); gap:6px; }
+.thermo-core-chip { border:1px solid var(--card-bd); border-radius:8px; padding:8px 10px; text-align:center; }
+html[data-theme="dark"]  .thermo-core-chip { background:#080E1C; }
+html[data-theme="light"] .thermo-core-chip { background:#F9FAFB; }
+.thermo-core-chip-name { font-size:10px; color:var(--txt2); margin-bottom:3px; }
+.thermo-core-chip-val  { font-size:20px; font-weight:700; line-height:1; }
 .btn-sw:active { transform: scale(.97); }
 html[data-theme="dark"] .btn-sw { color: #5B8FE8; border-color: #2A2A3E; }
 html[data-theme="dark"] .btn-sw:hover { background: rgba(91,143,232,.1); }
@@ -3319,8 +3315,8 @@ function closeThermoOv(e) {
 }
 
 function _tempColor(v) {
-  if (v < 50) return '#3B82F6';
-  if (v < 70) return '#22C55E';
+  if (v < 50) return '#0039A6';
+  if (v < 70) return '#10B981';
   if (v < 85) return '#F59E0B';
   return '#EF4444';
 }
@@ -3341,7 +3337,7 @@ function updateTemps() {
     if (d.error) {
       el.innerHTML = '<div class="thermo-unavail"><div style="font-size:28px;margin-bottom:8px">&#x26A0;&#xFE0F;</div>'
         + '<div style="font-weight:600;margin-bottom:4px">Error al leer sensores</div>'
-        + '<div style="font-size:11px;opacity:.7">' + d.error + '</div></div>';
+        + '<div style="font-size:11px;opacity:.7;margin-top:4px">' + d.error + '</div></div>';
       return;
     }
     if (d.starting) {
@@ -3357,32 +3353,32 @@ function updateTemps() {
 
     // ── CPU card ──
     if (d.cpu) {
-      var peak = d.cpu.peak, avg = d.cpu.avg;
-      var cl = _tempColor(peak), lbl = _tempLabel(peak);
-      var pct = Math.min(100, Math.max(0, peak));
+      var mx = d.cpu.max, avg = d.cpu.avg;
+      var cl = _tempColor(mx), lbl = _tempLabel(mx);
+      var pct = Math.min(100, Math.max(0, mx));
+      // [1] °C integrado al número grande — mismo tamaño y color
       html += '<div class="thermo-card">'
             +   '<div class="thermo-card-hdr">&#x1F5A5;&#xFE0F; CPU</div>'
             +   '<div style="text-align:center;margin:4px 0 2px">'
-            +     '<span style="font-size:72px;font-weight:800;line-height:1;color:' + cl + '">' + peak + '</span>'
-            +     '<span style="font-size:22px;font-weight:600;color:' + cl + '">&deg;C</span>'
+            +     '<span style="font-size:72px;font-weight:800;line-height:1;color:' + cl + '">' + mx + '&deg;C</span>'
             +   '</div>'
-            +   '<div style="text-align:center;font-size:13px;font-weight:700;color:' + cl + ';margin-bottom:4px">' + lbl + '</div>'
+            +   '<div style="text-align:center;font-size:13px;font-weight:700;color:' + cl + ';margin-bottom:3px">' + lbl + '</div>'
+            +   '<div style="text-align:center;font-size:11px;color:var(--txt2);margin-bottom:4px">Temperatura m&aacute;xima de los n&uacute;cleos</div>'
             +   '<div style="text-align:center;font-size:11px;color:var(--txt2);margin-bottom:10px">'
-            +     'Pico: ' + peak + '&deg;C &nbsp;&middot;&nbsp; Promedio: ' + avg + '&deg;C'
+            +     'M&aacute;x: ' + mx + '&deg;C &nbsp;&middot;&nbsp; Promedio: ' + avg + '&deg;C'
             +   '</div>'
             +   '<div class="thermo-bar-track" style="margin-bottom:14px">'
             +     '<div class="thermo-bar-fill thermo-bar-grad" style="width:' + pct + '%"></div>'
             +   '</div>';
 
+      // [2] Cores: cada uno con su propio color según temperatura
       if (d.cpu.cores && d.cpu.cores.length) {
-        html += '<div class="thermo-cores">';
+        html += '<div class="thermo-cores-grid">';
         d.cpu.cores.forEach(function(c) {
           var cc = _tempColor(c.value);
-          var cp = Math.min(100, Math.max(0, c.value));
-          html += '<div class="thermo-core-row">'
-                +   '<span class="thermo-core-name">' + c.name + '</span>'
-                +   '<div class="thermo-bar-track thermo-core-bar"><div class="thermo-bar-fill" style="width:' + cp + '%;background:' + cc + '"></div></div>'
-                +   '<span class="thermo-core-val" style="color:' + cc + '">' + c.value + '&deg;C</span>'
+          html += '<div class="thermo-core-chip">'
+                +   '<div class="thermo-core-chip-name">' + c.name + '</div>'
+                +   '<div style="font-size:20px;font-weight:700;line-height:1;color:' + cc + '">' + c.value + '&deg;C</div>'
                 + '</div>';
         });
         html += '</div>';
@@ -3390,26 +3386,61 @@ function updateTemps() {
       html += '</div>';
     }
 
-    // ── GPU card ──
+    // [3] GPU card — mismo estilo que CPU
     html += '<div class="thermo-card" style="margin-top:10px">'
-          +   '<div class="thermo-card-hdr">&#x1F3A6; GPU</div>';
+          +   '<div class="thermo-card-hdr">&#x1F4BB; GPU</div>';
     if (d.gpu && d.gpu.length) {
+      // Agrupar: GPU Core (principal), GPU Hot Spot (secundario), resto
+      var gpuCore    = null, gpuHotSpot = null, gpuOther = [];
       d.gpu.forEach(function(g) {
+        if (g.name === 'GPU Core')     gpuCore    = g;
+        else if (g.name === 'GPU Hot Spot') gpuHotSpot = g;
+        else gpuOther.push(g);
+      });
+
+      if (gpuCore) {
+        var gc = _tempColor(gpuCore.value), gl = _tempLabel(gpuCore.value);
+        var gp = Math.min(100, Math.max(0, gpuCore.value));
+        html += '<div style="text-align:center;margin:4px 0 2px">'
+              +   '<span style="font-size:72px;font-weight:800;line-height:1;color:' + gc + '">' + gpuCore.value + '&deg;C</span>'
+              + '</div>'
+              + '<div style="text-align:center;font-size:13px;font-weight:700;color:' + gc + ';margin-bottom:3px">' + gl + '</div>';
+
+        if (gpuHotSpot) {
+          var hc = _tempColor(gpuHotSpot.value);
+          html += '<div style="text-align:center;font-size:11px;color:var(--txt2);margin-bottom:4px">Temperatura del n&uacute;cleo GPU</div>'
+                + '<div style="text-align:center;font-size:11px;color:var(--txt2);margin-bottom:10px">'
+                +   'Core: ' + gpuCore.value + '&deg;C &nbsp;&middot;&nbsp; Hot Spot: '
+                +   '<span style="color:' + hc + ';font-weight:700">' + gpuHotSpot.value + '&deg;C</span>'
+                + '</div>';
+        } else {
+          html += '<div style="margin-bottom:14px"></div>';
+        }
+
+        html += '<div class="thermo-bar-track" style="margin-bottom:' + (gpuOther.length ? 14 : 0) + 'px">'
+              +   '<div class="thermo-bar-fill thermo-bar-grad" style="width:' + gp + '%"></div>'
+              + '</div>';
+      }
+
+      // Sensores GPU adicionales (otras GPUs, p.ej. integrada)
+      gpuOther.forEach(function(g) {
         var gc = _tempColor(g.value), gl = _tempLabel(g.value);
         var gp = Math.min(100, Math.max(0, g.value));
-        html += '<div style="margin-bottom:10px">'
-              +   '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:5px">'
-              +     '<span class="thermo-name">' + g.name + '</span>'
-              +     '<span class="thermo-badge" style="background:' + gc + '22;color:' + gc + '">' + gl + '</span>'
+        html += '<div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--card-bd)">'
+              +   '<div style="font-size:11px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;color:var(--txt2);margin-bottom:6px">' + g.name + '</div>'
+              +   '<div style="text-align:center;margin:2px 0">'
+              +     '<span style="font-size:30px;font-weight:800;line-height:1;color:' + gc + '">' + g.value + '&deg;C</span>'
               +   '</div>'
-              +   '<div style="display:flex;align-items:center;gap:10px">'
-              +     '<div class="thermo-bar-track" style="flex:1"><div class="thermo-bar-fill" style="width:' + gp + '%;background:' + gc + '"></div></div>'
-              +     '<span style="font-size:16px;font-weight:700;color:' + gc + ';min-width:52px;text-align:right">' + g.value + '&deg;C</span>'
-              +   '</div>'
+              +   '<div style="text-align:center;font-size:11px;font-weight:600;color:' + gc + ';margin-bottom:8px">' + gl + '</div>'
+              +   '<div class="thermo-bar-track"><div class="thermo-bar-fill thermo-bar-grad" style="width:' + gp + '%"></div></div>'
               + '</div>';
       });
+
+      if (!gpuCore && gpuOther.length === 0) {
+        html += '<div style="font-size:12px;color:var(--txt2);padding:6px 0">GPU integrada &mdash; sin sensor de temperatura disponible</div>';
+      }
     } else {
-      html += '<div style="font-size:12px;color:var(--txt2);padding:6px 0">GPU integrada &mdash; sensores no disponibles</div>';
+      html += '<div style="font-size:12px;color:var(--txt2);padding:6px 0">GPU integrada &mdash; sin sensor de temperatura disponible</div>';
     }
     html += '</div>';
 

@@ -16,9 +16,11 @@ python -m PyInstaller `
     --collect-all reportlab `
     --collect-all webview `
     --collect-all PIL `
+    --collect-all pythonnet `
     --hidden-import wmi `
     --hidden-import psutil `
     --hidden-import winreg `
+    --hidden-import clr `
     --add-data "assets;assets" `
     --add-data "tools;tools" `
     --add-data "tools/LibreHardwareMonitor;tools/LibreHardwareMonitor" `
