@@ -2780,16 +2780,9 @@ html[data-theme="light"] .net-sum-stat { background:rgba(255,255,255,.6); }
   <button class="btn btn-t" onclick="openThermoModal()">&#x1F321;&#xFE0F; Term&oacute;metro</button>
   <button class="btn btn-t" onclick="openNetModal()">&#x26A1; Pulso de Red</button>
 </div>
-<div class="rep-wrap">
-  <div class="rep-body">
-    <div id="emptyState" class="empty-state">
-      <img id="mascotMain" src="" alt="">
-      <p class="empty-title">Listo para diagnosticar</p>
-      <p class="empty-sub">Presion&aacute; &#x1F4CA; Generar Reporte Visual para crear la imagen</p>
-    </div>
-    <img id="repPreview" style="display:none" alt="Vista previa del reporte">
-  </div>
-</div>
+<img id="mascotMain" style="display:none" src="" alt="">
+<div id="emptyState" style="display:none"></div>
+<img id="repPreview" style="display:none" alt="">
 
 <div class="sbar">
   <div class="spin" id="spin"></div>
