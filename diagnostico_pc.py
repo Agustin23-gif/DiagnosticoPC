@@ -3007,9 +3007,15 @@ html[data-theme="light"] .net-sum-stat { background:rgba(255,255,255,.6); }
 <div id="adnModal" class="modal-ov" onclick="cerrarModalADNOv(event)">
   <div class="chk-modal-card" style="max-width:520px">
     <button class="modal-x" onclick="cerrarModalADN()">&#x2715;</button>
-    <div style="font-size:16px;font-weight:700;margin-bottom:4px;color:var(--txt)">&#x1F9EC; ADN del Equipo</div>
-    <div style="font-size:12px;color:var(--txt2);margin-bottom:16px">Informaci&oacute;n t&eacute;cnica detallada del sistema</div>
-    <div id="adnBody"><div class="modal-loading">&#x1F50D; Leyendo ADN del sistema&hellip;</div></div>
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
+      <span style="font-size:28px;line-height:1">&#x1F9EC;</span>
+      <div>
+        <div style="font-size:20px;font-weight:700;color:var(--text-on-card);line-height:1.2">ADN del Equipo</div>
+        <div style="font-size:13px;color:var(--text-muted-on-card);margin-top:2px">Informaci&oacute;n t&eacute;cnica detallada del sistema</div>
+      </div>
+    </div>
+    <div style="height:1px;background:var(--border-card);margin:14px 0 4px"></div>
+    <div id="adnBody"></div>
   </div>
 </div>
 
@@ -4112,8 +4118,26 @@ function _adnFmtVRAM(bytes) {
   var gb = bytes / 1073741824;
   return gb >= 1 ? gb.toFixed(1) + ' GB' : (bytes / 1048576).toFixed(0) + ' MB';
 }
+function _adnSpinner() {
+  return '<div style="text-align:center;padding:40px 0">'
+    + '<div style="width:36px;height:36px;border:3px solid #E5E7EB;border-top-color:var(--blue-primary);border-radius:50%;animation:spin 0.8s linear infinite;margin:0 auto 12px"></div>'
+    + '<div style="color:var(--text-muted-on-card);font-size:14px">Leyendo ADN del sistema&hellip;</div>'
+    + '</div>';
+}
+function _adnSecHdr(icon, label, first) {
+  return '<div style="display:flex;align-items:center;gap:8px;margin:' + (first ? '4' : '20') + 'px 0 12px">'
+    + '<span style="font-size:11px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:var(--text-muted-on-card)">' + icon + ' ' + label + '</span>'
+    + '<div style="flex:1;height:1px;background:var(--border-card)"></div>'
+    + '</div>';
+}
+function _adnCard(label, val) {
+  return '<div style="background:var(--surface-card);border:1px solid var(--border-card);border-radius:10px;padding:10px 14px">'
+    + '<div style="font-size:11px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:var(--text-muted-on-card);margin-bottom:4px">' + label + '</div>'
+    + '<div style="font-size:15px;font-weight:600;color:var(--text-on-card)">' + val + '</div>'
+    + '</div>';
+}
 function abrirModalADN() {
-  document.getElementById('adnBody').innerHTML = '<div class="modal-loading">&#x1F50D; Leyendo ADN del sistema&hellip;</div>';
+  document.getElementById('adnBody').innerHTML = _adnSpinner();
   document.getElementById('adnModal').classList.add('open');
   if (!window.pywebview || !window.pywebview.api) return;
   window.pywebview.api.get_system_info().then(function(raw) {
@@ -4128,34 +4152,46 @@ function abrirModalADN() {
       var gpus = d.gpu || [];
       var os = d.os || {};
       var h = '';
-      h += '<div style="font-size:11px;font-weight:600;letter-spacing:.5px;text-transform:uppercase;color:var(--txt2);margin-bottom:8px">&#x1F5A5;&#xFE0F; Placa Madre</div>';
-      h += '<div class="net-info-grid" style="margin-bottom:16px">';
-      h += '<div class="net-info-item"><div class="net-info-lbl">Fabricante</div><div class="net-info-val">' + (mb.Manufacturer || 'N/D') + '</div></div>';
-      h += '<div class="net-info-item"><div class="net-info-lbl">Modelo</div><div class="net-info-val">' + (mb.Product || 'N/D') + '</div></div>';
-      h += '<div class="net-info-item"><div class="net-info-lbl">BIOS</div><div class="net-info-val">' + (bios.SMBIOSBIOSVersion || 'N/D') + '</div></div>';
-      h += '<div class="net-info-item"><div class="net-info-lbl">Fecha BIOS</div><div class="net-info-val">' + _adnFmtBiosDate(bios.ReleaseDate) + '</div></div>';
+      h += _adnSecHdr('&#x1F5A5;&#xFE0F;', 'PLACA MADRE', true);
+      h += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">';
+      h += _adnCard('FABRICANTE', mb.Manufacturer || 'N/D');
+      h += _adnCard('MODELO', mb.Product || 'N/D');
       h += '</div>';
-      h += '<div style="font-size:11px;font-weight:600;letter-spacing:.5px;text-transform:uppercase;color:var(--txt2);margin-bottom:8px">&#x1F3AE; Tarjeta de Video</div>';
+      h += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">';
+      h += _adnCard('BIOS', bios.SMBIOSBIOSVersion || 'N/D');
+      h += _adnCard('FECHA BIOS', _adnFmtBiosDate(bios.ReleaseDate));
+      h += '</div>';
+      h += _adnSecHdr('&#x1F3AE;', 'TARJETA DE VIDEO', false);
       if (gpus.length === 0) {
-        h += '<div class="net-info-grid" style="margin-bottom:16px"><div class="net-info-item" style="grid-column:1/-1"><div class="net-info-val">N/D</div></div></div>';
+        h += '<div style="display:grid;grid-template-columns:1fr;gap:8px;margin-bottom:8px">' + _adnCard('GPU', 'N/D') + '</div>';
       } else {
         for (var i = 0; i < gpus.length; i++) {
           var g = gpus[i];
           var resol = (g.CurrentHorizontalResolution && g.CurrentVerticalResolution) ? g.CurrentHorizontalResolution + ' \xd7 ' + g.CurrentVerticalResolution : 'N/D';
-          h += '<div class="net-info-grid" style="margin-bottom:' + (i < gpus.length - 1 ? '8' : '16') + 'px">';
-          h += '<div class="net-info-item" style="grid-column:1/-1"><div class="net-info-lbl">Nombre</div><div class="net-info-val">' + (g.Name || 'N/D') + '</div></div>';
-          h += '<div class="net-info-item"><div class="net-info-lbl">VRAM</div><div class="net-info-val">' + _adnFmtVRAM(g.AdapterRAM) + '</div></div>';
-          h += '<div class="net-info-item"><div class="net-info-lbl">Resoluci\xf3n</div><div class="net-info-val">' + resol + '</div></div>';
+          if (gpus.length > 1) {
+            var gpuSub = 'GPU ' + (i + 1) + ' — ' + (i === 0 ? 'Integrada' : 'Dedicada');
+            h += '<div style="font-size:11px;color:var(--text-muted-on-card);margin-bottom:6px' + (i > 0 ? ';margin-top:12px' : '') + '">' + gpuSub + '</div>';
+          }
+          h += '<div style="display:grid;grid-template-columns:1fr;gap:8px;margin-bottom:8px">' + _adnCard('NOMBRE', g.Name || 'N/D') + '</div>';
+          h += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">';
+          h += _adnCard('VRAM', _adnFmtVRAM(g.AdapterRAM));
+          h += _adnCard('RESOLUCI\xd3N', resol);
           h += '</div>';
         }
       }
-      h += '<div style="font-size:11px;font-weight:600;letter-spacing:.5px;text-transform:uppercase;color:var(--txt2);margin-bottom:8px">&#x1F4BF; Sistema Operativo</div>';
-      h += '<div class="net-info-grid">';
-      h += '<div class="net-info-item" style="grid-column:1/-1"><div class="net-info-lbl">Sistema</div><div class="net-info-val">' + (os.Caption || 'N/D') + '</div></div>';
-      h += '<div class="net-info-item"><div class="net-info-lbl">Build</div><div class="net-info-val">' + (os.BuildNumber || 'N/D') + '</div></div>';
-      h += '<div class="net-info-item"><div class="net-info-lbl">Arquitectura</div><div class="net-info-val">' + (os.OSArchitecture || 'N/D') + '</div></div>';
-      h += '<div class="net-info-item" style="grid-column:1/-1"><div class="net-info-lbl">Activaci\xf3n</div><div class="net-info-val">' + (d.activation || 'N/D') + '</div></div>';
+      h += _adnSecHdr('&#x1F4BF;', 'SISTEMA OPERATIVO', false);
+      h += '<div style="display:grid;grid-template-columns:1fr;gap:8px;margin-bottom:8px">' + _adnCard('SISTEMA', os.Caption || 'N/D') + '</div>';
+      h += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">';
+      h += _adnCard('BUILD', os.BuildNumber || 'N/D');
+      h += _adnCard('ARQUITECTURA', os.OSArchitecture || 'N/D');
       h += '</div>';
+      var actOk  = d.activation && d.activation.indexOf('Activado') === 0;
+      var actBg  = actOk ? 'rgba(34,197,94,0.12)'  : 'rgba(239,68,68,0.12)';
+      var actClr = actOk ? '#15803D' : '#B91C1C';
+      var actBadge = '<span style="display:inline-flex;align-items:center;gap:6px;padding:4px 12px;border-radius:999px;font-size:13px;font-weight:600;background:' + actBg + ';color:' + actClr + '">' + (d.activation || 'N/D') + '</span>';
+      h += '<div style="background:var(--surface-card);border:1px solid var(--border-card);border-radius:10px;padding:10px 14px">'
+        + '<div style="font-size:11px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:var(--text-muted-on-card);margin-bottom:6px">ACTIVACI\xd3N</div>'
+        + actBadge + '</div>';
       document.getElementById('adnBody').innerHTML = h;
     } catch(e) {
       document.getElementById('adnBody').innerHTML = '<div class="modal-loading">&#x26A0;&#xFE0F; Error al parsear datos</div>';
@@ -4166,7 +4202,7 @@ function abrirModalADN() {
 }
 function cerrarModalADN() {
   document.getElementById('adnModal').classList.remove('open');
-  document.getElementById('adnBody').innerHTML = '<div class="modal-loading">&#x1F50D; Leyendo ADN del sistema&hellip;</div>';
+  document.getElementById('adnBody').innerHTML = _adnSpinner();
 }
 function cerrarModalADNOv(e) {
   if (e.target === document.getElementById('adnModal')) cerrarModalADN();
