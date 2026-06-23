@@ -2039,6 +2039,48 @@ class Api:
             return json.dumps({"error": str(e)})
 
     # ── Desinstalador de Programas ───────────────────────────────────
+    @staticmethod
+    def _extract_icons_batch(icon_pairs):
+        """Extract icons for multiple exe/dll paths in one PowerShell call.
+        icon_pairs: list of (str_index, path). Returns {str_index: base64_png}.
+        """
+        if not icon_pairs:
+            return {}
+        assignments = []
+        for idx, p in icon_pairs:
+            safe = p.replace("'", "''")
+            assignments.append(f"'{idx}'='{safe}'")
+        ht = ";".join(assignments)
+        ps = (
+            "Add-Type -AssemblyName System.Drawing;"
+            "$m=@{" + ht + "};"
+            "$r=@{};"
+            "foreach($k in $m.Keys){"
+            "  $p=$m[$k];"
+            "  if(Test-Path -LiteralPath $p){"
+            "    try{"
+            "      $ic=[System.Drawing.Icon]::ExtractAssociatedIcon($p);"
+            "      $bm=$ic.ToBitmap();"
+            "      $ms=New-Object System.IO.MemoryStream;"
+            "      $bm.Save($ms,[System.Drawing.Imaging.ImageFormat]::Png);"
+            "      $r[$k]=[Convert]::ToBase64String($ms.ToArray());"
+            "      $ms.Dispose();$bm.Dispose();$ic.Dispose()"
+            "    }catch{}"
+            "  }"
+            "};"
+            "if($r.Count){$r|ConvertTo-Json -Compress}else{'{}' }"
+        )
+        try:
+            result = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+                capture_output=True, text=True, timeout=45, **_NWIN,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return json.loads(result.stdout.strip())
+        except Exception:
+            pass
+        return {}
+
     def get_installed_programs(self):
         try:
             programs = []
@@ -2060,18 +2102,23 @@ class Api:
                                 version = ""
                                 uninstall_str = ""
                                 quiet_str = ""
+                                icon_raw = ""
                                 try: version = winreg.QueryValueEx(subkey, "DisplayVersion")[0]
                                 except: pass
                                 try: uninstall_str = winreg.QueryValueEx(subkey, "UninstallString")[0]
                                 except: pass
                                 try: quiet_str = winreg.QueryValueEx(subkey, "QuietUninstallString")[0]
                                 except: pass
+                                try: icon_raw = winreg.QueryValueEx(subkey, "DisplayIcon")[0]
+                                except: pass
                                 if uninstall_str:
+                                    icon_path = icon_raw.split(",")[0].strip().strip('"') if icon_raw else ""
                                     programs.append({
-                                        "name":      name.strip(),
-                                        "version":   version.strip() if version else "",
-                                        "uninstall": uninstall_str.strip(),
-                                        "quiet":     quiet_str.strip() if quiet_str else "",
+                                        "name":       name.strip(),
+                                        "version":    version.strip() if version else "",
+                                        "uninstall":  uninstall_str.strip(),
+                                        "quiet":      quiet_str.strip() if quiet_str else "",
+                                        "_icon_path": icon_path,
                                     })
                             except: pass
                             winreg.CloseKey(subkey)
@@ -2079,6 +2126,16 @@ class Api:
                     winreg.CloseKey(key)
                 except: pass
             programs.sort(key=lambda x: x["name"].lower())
+            limit = min(len(programs), 150)
+            icon_pairs = [
+                (str(i), programs[i]["_icon_path"])
+                for i in range(limit)
+                if programs[i]["_icon_path"]
+            ]
+            icons = Api._extract_icons_batch(icon_pairs)
+            for i, p in enumerate(programs):
+                p["icon"] = icons.get(str(i), "") if i < limit else ""
+                del p["_icon_path"]
             return json.dumps(programs)
         except Exception as e:
             return json.dumps({"error": str(e)})
@@ -4499,7 +4556,11 @@ function abrirModalDesinstalador() {
       el.innerHTML = '<div style="text-align:center;padding:20px;color:var(--txt2)">No se encontraron programas instalados.</div>';
     } else {
       el.innerHTML = data.map(function(p, i) {
-        return '<div style="background:var(--card-bg);border:1px solid var(--card-bd);border-radius:10px;padding:10px 14px;margin-bottom:6px;display:flex;align-items:center;gap:10px">'
+        var iconHtml = p.icon
+          ? '<img src="data:image/png;base64,' + p.icon + '" style="width:28px;height:28px;border-radius:4px;object-fit:contain;flex-shrink:0;">'
+          : '<div style="width:28px;height:28px;border-radius:4px;background:rgba(26,86,196,0.10);display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0;">&#x1F4E6;</div>';
+        return '<div style="background:var(--card-bg);border:1px solid var(--card-bd);border-radius:10px;padding:10px 14px;margin-bottom:6px;display:flex;align-items:center;gap:12px">'
+          + iconHtml
           + '<div style="flex:1;min-width:0">'
           + '<div style="font-size:14px;font-weight:600;color:var(--txt);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + _escHtml(p.name) + '</div>'
           + (p.version ? '<div style="font-size:12px;color:var(--txt2);margin-top:2px">' + _escHtml(p.version) + '</div>' : '')
