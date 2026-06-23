@@ -12,7 +12,8 @@ Write-Host "  [2/3] Compilando ejecutable (puede tardar 2-3 minutos)..." -Foregr
 python -m PyInstaller `
     --onefile `
     --windowed `
-    --name "DiagnosticoPC" `
+    --name "PC House Diagnostico" `
+    --icon "assets/icon.ico" `
     --collect-all reportlab `
     --collect-all webview `
     --collect-all PIL `
@@ -29,7 +30,7 @@ python -m PyInstaller `
     "diagnostico_pc.py"
 
 Write-Host "  [3/3] Verificando resultado..." -ForegroundColor Cyan
-$exe = "dist\DiagnosticoPC.exe"
+$exe = "dist\PC House Diagnostico.exe"
 if (Test-Path $exe) {
     $mb = [math]::Round((Get-Item $exe).Length / 1MB, 1)
     Write-Host ""
