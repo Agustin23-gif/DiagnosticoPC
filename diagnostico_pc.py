@@ -2038,6 +2038,99 @@ class Api:
         except Exception as e:
             return json.dumps({"error": str(e)})
 
+    # ── Limpiar Sistema ──────────────────────────────────────────────
+    def analyze_cleanup(self):
+        try:
+            result = {}
+
+            size = 0
+            temp_user = os.environ.get("TEMP", "")
+            if temp_user and os.path.exists(temp_user):
+                for dp, dn, fn in os.walk(temp_user):
+                    for f in fn:
+                        try: size += os.path.getsize(os.path.join(dp, f))
+                        except: pass
+            result["temp_user"] = size
+
+            size = 0
+            win_temp = r"C:\Windows\Temp"
+            if os.path.exists(win_temp):
+                for dp, dn, fn in os.walk(win_temp):
+                    for f in fn:
+                        try: size += os.path.getsize(os.path.join(dp, f))
+                        except: pass
+            result["temp_win"] = size
+
+            size = 0
+            try:
+                r = subprocess.run(
+                    ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                     "$shell = New-Object -ComObject Shell.Application; "
+                     "$rb = $shell.Namespace(0xA); "
+                     "($rb.Items() | Measure-Object -Property Size -Sum).Sum"],
+                    capture_output=True, text=True, timeout=10, **_NWIN,
+                )
+                if r.returncode == 0 and r.stdout.strip():
+                    size = int(float(r.stdout.strip()))
+            except: pass
+            result["recycle"] = size
+
+            result["total"] = result["temp_user"] + result["temp_win"] + result["recycle"]
+            return json.dumps(result)
+        except Exception as e:
+            return json.dumps({"error": str(e), "temp_user": 0, "temp_win": 0, "recycle": 0, "total": 0})
+
+    def run_cleanup(self):
+        try:
+            import shutil
+            freed = 0
+
+            temp_user = os.environ.get("TEMP", "")
+            if temp_user and os.path.exists(temp_user):
+                for item in os.listdir(temp_user):
+                    p = os.path.join(temp_user, item)
+                    try:
+                        if os.path.isfile(p):
+                            freed += os.path.getsize(p)
+                            os.remove(p)
+                        elif os.path.isdir(p):
+                            freed += sum(
+                                os.path.getsize(os.path.join(dp, f))
+                                for dp, dn, fn in os.walk(p) for f in fn
+                                if os.path.exists(os.path.join(dp, f))
+                            )
+                            shutil.rmtree(p, ignore_errors=True)
+                    except: pass
+
+            win_temp = r"C:\Windows\Temp"
+            if os.path.exists(win_temp):
+                for item in os.listdir(win_temp):
+                    p = os.path.join(win_temp, item)
+                    try:
+                        if os.path.isfile(p):
+                            freed += os.path.getsize(p)
+                            os.remove(p)
+                        elif os.path.isdir(p):
+                            freed += sum(
+                                os.path.getsize(os.path.join(dp, f))
+                                for dp, dn, fn in os.walk(p) for f in fn
+                                if os.path.exists(os.path.join(dp, f))
+                            )
+                            shutil.rmtree(p, ignore_errors=True)
+                    except: pass
+
+            try:
+                subprocess.run(
+                    ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                     "Clear-RecycleBin -Force -ErrorAction SilentlyContinue"],
+                    capture_output=True, timeout=30, **_NWIN,
+                )
+            except: pass
+
+            return json.dumps({"freed": freed})
+        except Exception as e:
+            return json.dumps({"error": str(e), "freed": 0})
+
     # ── Optimizar Windows (WinUtil) ───────────────────────────────────
     def launch_winutil(self):
         try:
@@ -2779,6 +2872,7 @@ html[data-theme="light"] .net-sum-stat { background:rgba(255,255,255,.6); }
   <button class="btn btn-s" id="btnOpenFolder" onclick="doOpenFolder()" style="display:none">&#x1F5BC;&#xFE0F; Abrir Reporte</button>
   <button class="btn btn-t" onclick="openThermoModal()">&#x1F321;&#xFE0F; Term&oacute;metro</button>
   <button class="btn btn-t" onclick="openNetModal()">&#x26A1; Pulso de Red</button>
+  <button class="btn btn-t" onclick="abrirModalLimpieza()">&#x1F9F9; Limpiar Sistema</button>
 </div>
 <img id="mascotMain" style="display:none" src="" alt="">
 <div id="emptyState" style="display:none"></div>
@@ -3021,6 +3115,49 @@ html[data-theme="light"] .net-sum-stat { background:rgba(255,255,255,.6); }
     </div>
     <div style="height:1px;background:var(--border-card);margin:14px 0 4px"></div>
     <div id="adnBody"></div>
+  </div>
+</div>
+
+<div id="cleanModal" class="modal-ov" onclick="cerrarModalLimpiezaOv(event)">
+  <div class="chk-modal-card" style="max-width:480px">
+    <button class="modal-x" onclick="cerrarModalLimpieza()">&#x2715;</button>
+    <div style="font-size:16px;font-weight:700;margin-bottom:4px;color:var(--txt)">&#x1F9F9; Limpiar Sistema</div>
+    <div style="font-size:12px;color:var(--txt2);margin-bottom:16px">Libera espacio eliminando archivos temporales y basura del sistema</div>
+
+    <!-- Estado 1: Analizando -->
+    <div id="cleanAnalyzingSection">
+      <div style="text-align:center;padding:32px 0">
+        <div style="width:40px;height:40px;border:3px solid var(--bar-track);border-top-color:var(--brand);border-radius:50%;animation:spin .8s linear infinite;margin:0 auto 14px"></div>
+        <div style="font-size:14px;color:var(--txt2)">Analizando sistema&hellip;</div>
+      </div>
+    </div>
+
+    <!-- Estado 2: Resultado del análisis -->
+    <div id="cleanResultSection" style="display:none">
+      <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:16px" id="cleanBreakdown"></div>
+      <button class="btn btn-p" style="width:100%;padding:11px;border-radius:10px;font-size:14px" onclick="ejecutarLimpieza()">&#x1F9F9; Limpiar Ahora</button>
+    </div>
+
+    <!-- Estado 3: Progreso -->
+    <div id="cleanProgressSection" style="display:none">
+      <div style="font-size:13px;font-weight:500;color:var(--txt);text-align:center;margin-bottom:14px" id="cleanStageLabel">&#x1F5C2; Limpiando temporales del usuario...</div>
+      <div style="background:var(--bar-track);border-radius:99px;height:10px;overflow:hidden;margin-bottom:8px">
+        <div id="cleanProgBar" style="height:100%;width:0%;border-radius:99px;background:linear-gradient(90deg,#1A56C4,#00C9A7);transition:width .5s ease"></div>
+      </div>
+      <div style="font-size:11px;color:var(--txt2);text-align:center" id="cleanProgPct">0%</div>
+    </div>
+
+    <!-- Estado 4: Completado -->
+    <div id="cleanDoneSection" style="display:none">
+      <div style="text-align:center;padding:20px 0 16px">
+        <div style="font-size:56px;line-height:1;margin-bottom:12px">&#x1F4A5;</div>
+        <div style="font-size:20px;font-weight:700;color:var(--txt);margin-bottom:6px">&#xA1;Archivos basura... desintegrados!</div>
+        <div style="font-size:13px;color:var(--txt2);margin-bottom:16px">Limpieza completada exitosamente</div>
+        <div style="font-size:36px;font-weight:800;color:var(--brand);margin-bottom:8px" id="cleanFreedLabel">0 MB liberados</div>
+        <div style="font-size:12px;color:var(--txt2);margin-bottom:20px">Tu equipo opera al m&#xE1;ximo ahora &#x1F680;</div>
+        <button class="btn btn-p" style="padding:10px 32px;font-size:14px" onclick="cerrarModalLimpieza()">Cerrar</button>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -4211,6 +4348,104 @@ function cerrarModalADN() {
 }
 function cerrarModalADNOv(e) {
   if (e.target === document.getElementById('adnModal')) cerrarModalADN();
+}
+
+// ── Limpiar Sistema modal ────────────────────────────────────────────────
+function _cleanFmt(bytes) {
+  if (bytes >= 1073741824) return (bytes / 1073741824).toFixed(1) + ' GB';
+  if (bytes >= 1048576)    return (bytes / 1048576).toFixed(0) + ' MB';
+  if (bytes >= 1024)       return (bytes / 1024).toFixed(0) + ' KB';
+  return bytes + ' B';
+}
+
+function abrirModalLimpieza() {
+  document.getElementById('cleanAnalyzingSection').style.display = '';
+  document.getElementById('cleanResultSection').style.display    = 'none';
+  document.getElementById('cleanProgressSection').style.display  = 'none';
+  document.getElementById('cleanDoneSection').style.display      = 'none';
+  document.getElementById('cleanModal').classList.add('open');
+  if (!window.pywebview || !window.pywebview.api) return;
+  window.pywebview.api.analyze_cleanup().then(function(raw) {
+    var d = JSON.parse(raw);
+    var bd = document.getElementById('cleanBreakdown');
+    bd.innerHTML =
+      '<div style="display:flex;justify-content:space-between;padding:10px 14px;border-radius:8px;background:var(--rep-bg);border:1px solid var(--card-bd)">'
+      + '<span style="color:var(--txt)">&#x1F5C2; Temporales del usuario</span>'
+      + '<span style="font-weight:600;color:var(--txt)">' + _cleanFmt(d.temp_user || 0) + '</span>'
+      + '</div>'
+      + '<div style="display:flex;justify-content:space-between;padding:10px 14px;border-radius:8px;background:var(--rep-bg);border:1px solid var(--card-bd)">'
+      + '<span style="color:var(--txt)">&#x1F5C2; Temporales de Windows</span>'
+      + '<span style="font-weight:600;color:var(--txt)">' + _cleanFmt(d.temp_win || 0) + '</span>'
+      + '</div>'
+      + '<div style="display:flex;justify-content:space-between;padding:10px 14px;border-radius:8px;background:var(--rep-bg);border:1px solid var(--card-bd)">'
+      + '<span style="color:var(--txt)">&#x1F5D1;&#xFE0F; Papelera de reciclaje</span>'
+      + '<span style="font-weight:600;color:var(--txt)">' + _cleanFmt(d.recycle || 0) + '</span>'
+      + '</div>'
+      + '<div style="display:flex;justify-content:space-between;padding:12px 14px;border-radius:8px;background:var(--info-bg);border:1px solid rgba(75,158,255,.25)">'
+      + '<span style="font-weight:700;color:var(--txt)">Total a liberar</span>'
+      + '<span style="font-weight:800;font-size:15px;color:var(--brand)">' + _cleanFmt(d.total || 0) + '</span>'
+      + '</div>';
+    document.getElementById('cleanAnalyzingSection').style.display = 'none';
+    document.getElementById('cleanResultSection').style.display    = '';
+  }).catch(function() {
+    document.getElementById('cleanAnalyzingSection').style.display = 'none';
+    document.getElementById('cleanResultSection').style.display    = '';
+  });
+}
+
+function ejecutarLimpieza() {
+  document.getElementById('cleanResultSection').style.display   = 'none';
+  document.getElementById('cleanProgressSection').style.display = '';
+  var stages = [
+    '&#x1F5C2; Limpiando temporales del usuario...',
+    '&#x1F5C2; Limpiando temporales de Windows...',
+    '&#x1F5D1;&#xFE0F; Vaciando papelera...',
+    '&#x2728; Finalizando...'
+  ];
+  var pcts = [15, 45, 75, 90];
+  var si   = 0;
+  var bar  = document.getElementById('cleanProgBar');
+  var lbl  = document.getElementById('cleanStageLabel');
+  var pct  = document.getElementById('cleanProgPct');
+  if (bar) bar.style.width = '5%';
+  if (pct) pct.textContent = '5%';
+  if (lbl) lbl.innerHTML   = stages[0];
+  var _stageTimer = setInterval(function() {
+    si++;
+    if (si < stages.length) {
+      if (bar) bar.style.width = pcts[si] + '%';
+      if (pct) pct.textContent = pcts[si] + '%';
+      if (lbl) lbl.innerHTML   = stages[si];
+    }
+  }, 1200);
+  window.pywebview.api.run_cleanup().then(function(raw) {
+    clearInterval(_stageTimer);
+    var d = JSON.parse(raw);
+    if (bar) bar.style.width = '100%';
+    if (pct) pct.textContent = '100%';
+    setTimeout(function() {
+      var freed = d.freed || 0;
+      document.getElementById('cleanFreedLabel').textContent      = _cleanFmt(freed) + ' liberados';
+      document.getElementById('cleanProgressSection').style.display = 'none';
+      document.getElementById('cleanDoneSection').style.display     = '';
+    }, 400);
+  }).catch(function() {
+    clearInterval(_stageTimer);
+    document.getElementById('cleanProgressSection').style.display = 'none';
+    document.getElementById('cleanResultSection').style.display   = '';
+  });
+}
+
+function cerrarModalLimpieza() {
+  document.getElementById('cleanModal').classList.remove('open');
+  document.getElementById('cleanAnalyzingSection').style.display = '';
+  document.getElementById('cleanResultSection').style.display    = 'none';
+  document.getElementById('cleanProgressSection').style.display  = 'none';
+  document.getElementById('cleanDoneSection').style.display      = 'none';
+}
+
+function cerrarModalLimpiezaOv(e) {
+  if (e.target === document.getElementById('cleanModal')) cerrarModalLimpieza();
 }
 
 window.addEventListener('resize', () => { _drawCPUFrame(_cpuDisp); drawRAM(_lastRamPct); });
