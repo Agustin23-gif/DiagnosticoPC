@@ -2245,6 +2245,15 @@ class Api:
         except Exception as e:
             return json.dumps({"error": str(e), "freed": 0})
 
+    # ── Abrir URL en navegador predeterminado ────────────────────────
+    def abrir_url(self, url):
+        try:
+            import webbrowser
+            webbrowser.open(url)
+            return json.dumps({"status": "ok"})
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
     # ── Optimizar Windows (WinUtil) ───────────────────────────────────
     def launch_winutil(self):
         try:
@@ -4419,6 +4428,8 @@ function netOnDone(data) {
 }
 
 // ── ADN del Equipo modal ──────────────────────────────────────────────────────
+var _adnFab = '';
+var _adnMod = '';
 function _adnFmtBiosDate(raw) {
   if (!raw) return 'N/D';
   var m = String(raw).match(/^(\\d{4})(\\d{2})(\\d{2})/);
@@ -4473,6 +4484,11 @@ function abrirModalADN() {
       h += _adnCard('BIOS', bios.SMBIOSBIOSVersion || 'N/D');
       h += _adnCard('FECHA BIOS', _adnFmtBiosDate(bios.ReleaseDate));
       h += '</div>';
+      _adnFab = mb.Manufacturer || '';
+      _adnMod = mb.Product || '';
+      if (_adnMod) {
+        h += '<button onclick="buscarDrivers(_adnFab,_adnMod)" style="background:#1A56C4;color:white;border:none;border-radius:10px;padding:10px 20px;font-size:14px;font-weight:600;font-family:var(--font-ui);cursor:pointer;width:100%;margin-top:12px">&#x1F50D; Buscar Drivers Oficiales</button>';
+      }
       h += _adnSecHdr('&#x1F3AE;', 'TARJETA DE VIDEO', false);
       if (gpus.length === 0) {
         h += '<div style="display:grid;grid-template-columns:1fr;gap:8px;margin-bottom:8px">' + _adnCard('GPU', 'N/D') + '</div>';
@@ -4518,6 +4534,41 @@ function cerrarModalADN() {
 }
 function cerrarModalADNOv(e) {
   if (e.target === document.getElementById('adnModal')) cerrarModalADN();
+}
+function buscarDrivers(fabricante, modelo) {
+  var fab = fabricante.toLowerCase();
+  var url = '';
+  var modeloEncoded = encodeURIComponent(modelo);
+  if (fab.includes('asus')) {
+    url = 'https://www.asus.com/support/search/?query=' + modeloEncoded;
+  } else if (fab.includes('msi')) {
+    url = 'https://www.msi.com/search?keyword=' + modeloEncoded;
+  } else if (fab.includes('gigabyte') || fab.includes('giga-byte')) {
+    url = 'https://www.gigabyte.com/Support/Utility?q=' + modeloEncoded;
+  } else if (fab.includes('asrock')) {
+    url = 'https://www.asrock.com/support/index.asp?cat=Drivers&p=' + modeloEncoded;
+  } else if (fab.includes('hp') || fab.includes('hewlett')) {
+    url = 'https://support.hp.com/us-en/drivers?query=' + modeloEncoded;
+  } else if (fab.includes('dell')) {
+    url = 'https://www.dell.com/support/home/en-us?q=' + modeloEncoded;
+  } else if (fab.includes('lenovo')) {
+    url = 'https://support.lenovo.com/us/en/search?query=' + modeloEncoded;
+  } else if (fab.includes('acer')) {
+    url = 'https://www.acer.com/us-en/support/product-support?q=' + modeloEncoded;
+  } else if (fab.includes('biostar')) {
+    url = 'https://www.biostar.com.tw/app/en/support/search.php?keyword=' + modeloEncoded;
+  } else if (fab.includes('evga')) {
+    url = 'https://www.evga.com/support/download/?PN=' + modeloEncoded;
+  } else if (fab.includes('intel')) {
+    url = 'https://www.intel.com/content/www/us/en/search.html?ws=text#q=' + modeloEncoded + '&t=Downloads';
+  } else if (fab.includes('toshiba')) {
+    url = 'https://support.dynabook.com/support/driverDetails?query=' + modeloEncoded;
+  } else if (fab.includes('samsung')) {
+    url = 'https://www.samsung.com/us/support/search/?searchvalue=' + modeloEncoded;
+  } else {
+    url = 'https://www.google.com/search?q=' + encodeURIComponent(fabricante + ' ' + modelo + ' drivers oficiales descargar');
+  }
+  window.pywebview.api.abrir_url(url);
 }
 
 // ── Desinstalador de Programas modal ─────────────────────────────────────
