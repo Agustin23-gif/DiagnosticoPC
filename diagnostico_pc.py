@@ -2038,6 +2038,63 @@ class Api:
         except Exception as e:
             return json.dumps({"error": str(e)})
 
+    # ── Desinstalador de Programas ───────────────────────────────────
+    def get_installed_programs(self):
+        try:
+            programs = []
+            keys = [
+                r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
+                r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall",
+            ]
+            for key_path in keys:
+                try:
+                    key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key_path)
+                    for i in range(winreg.QueryInfoKey(key)[0]):
+                        try:
+                            subkey_name = winreg.EnumKey(key, i)
+                            subkey = winreg.OpenKey(key, subkey_name)
+                            try:
+                                name = winreg.QueryValueEx(subkey, "DisplayName")[0]
+                                if not name or not name.strip():
+                                    continue
+                                version = ""
+                                uninstall_str = ""
+                                quiet_str = ""
+                                try: version = winreg.QueryValueEx(subkey, "DisplayVersion")[0]
+                                except: pass
+                                try: uninstall_str = winreg.QueryValueEx(subkey, "UninstallString")[0]
+                                except: pass
+                                try: quiet_str = winreg.QueryValueEx(subkey, "QuietUninstallString")[0]
+                                except: pass
+                                if uninstall_str:
+                                    programs.append({
+                                        "name":      name.strip(),
+                                        "version":   version.strip() if version else "",
+                                        "uninstall": uninstall_str.strip(),
+                                        "quiet":     quiet_str.strip() if quiet_str else "",
+                                    })
+                            except: pass
+                            winreg.CloseKey(subkey)
+                        except: pass
+                    winreg.CloseKey(key)
+                except: pass
+            programs.sort(key=lambda x: x["name"].lower())
+            return json.dumps(programs)
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
+    def uninstall_program(self, uninstall_str, forced):
+        try:
+            cmd = uninstall_str
+            if forced:
+                if "msiexec" in uninstall_str.lower():
+                    if "/x" in uninstall_str.lower() or "/i" in uninstall_str.lower():
+                        cmd = uninstall_str + " /quiet /norestart"
+            subprocess.run(cmd, shell=True, timeout=120, **_NWIN)
+            return json.dumps({"status": "ok"})
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
     # ── Limpiar Sistema ──────────────────────────────────────────────
     def analyze_cleanup(self):
         try:
@@ -2836,6 +2893,10 @@ html[data-theme="light"] .net-sum-stat { background:rgba(255,255,255,.6); }
         <span class="tool-icon">&#x26A1;</span>
         <span>Optimizar Windows</span>
       </button>
+      <button class="btn-tool-card" onclick="abrirModalDesinstalador()">
+        <span class="tool-icon">&#x1F5D1;&#xFE0F;</span>
+        <span>Desinstalar</span>
+      </button>
     </div>
   </div>
 </div>
@@ -3156,6 +3217,58 @@ html[data-theme="light"] .net-sum-stat { background:rgba(255,255,255,.6); }
         <div style="font-size:36px;font-weight:800;color:var(--brand);margin-bottom:8px" id="cleanFreedLabel">0 MB liberados</div>
         <div style="font-size:12px;color:var(--txt2);margin-bottom:20px">Tu equipo opera al m&#xE1;ximo ahora &#x1F680;</div>
         <button class="btn btn-p" style="padding:10px 32px;font-size:14px" onclick="cerrarModalLimpieza()">Cerrar</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="desinstaModal" class="modal-ov" onclick="cerrarDesinstaOv(event)">
+  <div class="chk-modal-card" style="max-width:540px">
+    <button class="modal-x" onclick="cerrarModalDesinstalador()">&#x2715;</button>
+    <div style="font-size:16px;font-weight:700;margin-bottom:4px;color:var(--txt)">&#x1F5D1;&#xFE0F; Desinstalador de Programas</div>
+    <div style="font-size:12px;color:var(--txt2);margin-bottom:16px">Selecion&#xE1; un programa para desinstalarlo</div>
+
+    <!-- Estado 1: Lista -->
+    <div id="desinstaListSection">
+      <div id="desinstaLoadingEl" style="text-align:center;padding:32px 0">
+        <div style="width:40px;height:40px;border:3px solid var(--bar-track);border-top-color:var(--brand);border-radius:50%;animation:spin .8s linear infinite;margin:0 auto 14px"></div>
+        <div style="font-size:14px;color:var(--txt2)">Cargando programas instalados&hellip;</div>
+      </div>
+      <div id="desinstaProgList" style="display:none;max-height:360px;overflow-y:auto;padding-right:4px"></div>
+    </div>
+
+    <!-- Estado 2: Confirmación -->
+    <div id="desinstaConfirmSection" style="display:none">
+      <div style="font-size:13px;color:var(--txt2);margin-bottom:10px">Est&#xE1;s por desinstalar:</div>
+      <div id="desinstaConfirmName" style="font-size:15px;font-weight:700;color:var(--txt);margin-bottom:20px;word-break:break-word"></div>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <button class="btn btn-p" style="width:100%;padding:11px;border-radius:10px;font-size:13px;line-height:1.4" onclick="ejecutarDesinstalacion(false)">
+          Desinstalaci&#xF3;n Normal<br>
+          <span style="font-size:11px;font-weight:400;opacity:.75">Ejecuta el desinstalador oficial del programa</span>
+        </button>
+        <button style="width:100%;padding:11px;border-radius:10px;font-size:13px;font-weight:600;cursor:pointer;line-height:1.4;border:1px solid rgba(239,68,68,0.25);background:rgba(239,68,68,0.12);color:#B91C1C;font-family:var(--font-ui)" onclick="ejecutarDesinstalacion(true)">
+          Desinstalaci&#xF3;n Forzada<br>
+          <span style="font-size:11px;font-weight:400;opacity:.75">Elimina archivos residuales y entradas de registro</span>
+        </button>
+        <button class="btn-chk-confirm-no" style="width:100%;padding:9px;border-radius:8px" onclick="volverAListaDesinstala()">Cancelar</button>
+      </div>
+    </div>
+
+    <!-- Estado 3: Progreso -->
+    <div id="desinstaProgressSection" style="display:none">
+      <div style="text-align:center;padding:32px 0">
+        <div style="width:40px;height:40px;border:3px solid var(--bar-track);border-top-color:var(--brand);border-radius:50%;animation:spin .8s linear infinite;margin:0 auto 14px"></div>
+        <div style="font-size:14px;font-weight:600;color:var(--txt);margin-bottom:6px" id="desinstaProgLabel">&hellip;</div>
+        <div style="font-size:12px;color:var(--txt2)">Desinstalando&hellip;</div>
+      </div>
+    </div>
+
+    <!-- Estado 4: Resultado -->
+    <div id="desinstaResultSection" style="display:none">
+      <div style="text-align:center;padding:24px 0 16px">
+        <div style="font-size:48px;line-height:1;margin-bottom:12px" id="desinstaResultIcon">&#x2705;</div>
+        <div style="font-size:18px;font-weight:700;color:var(--txt);margin-bottom:20px" id="desinstaResultMsg">Programa desinstalado correctamente</div>
+        <button class="btn btn-p" style="padding:10px 32px;font-size:14px" onclick="cerrarModalDesinstalador()">Cerrar</button>
       </div>
     </div>
   </div>
@@ -4348,6 +4461,108 @@ function cerrarModalADN() {
 }
 function cerrarModalADNOv(e) {
   if (e.target === document.getElementById('adnModal')) cerrarModalADN();
+}
+
+// ── Desinstalador de Programas modal ─────────────────────────────────────
+var _desinstaPrograms = [];
+var _desinstaSelected = null;
+
+function _escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function abrirModalDesinstalador() {
+  _desinstaSelected = null;
+  _desinstaPrograms = [];
+  document.getElementById('desinstaListSection').style.display     = '';
+  document.getElementById('desinstaConfirmSection').style.display  = 'none';
+  document.getElementById('desinstaProgressSection').style.display = 'none';
+  document.getElementById('desinstaResultSection').style.display   = 'none';
+  document.getElementById('desinstaLoadingEl').style.display       = '';
+  document.getElementById('desinstaLoadingEl').innerHTML =
+    '<div style="width:40px;height:40px;border:3px solid var(--bar-track);border-top-color:var(--brand);border-radius:50%;animation:spin .8s linear infinite;margin:0 auto 14px"></div>'
+    + '<div style="font-size:14px;color:var(--txt2)">Cargando programas instalados…</div>';
+  document.getElementById('desinstaProgList').style.display        = 'none';
+  document.getElementById('desinstaProgList').innerHTML            = '';
+  document.getElementById('desinstaModal').classList.add('open');
+  if (!window.pywebview || !window.pywebview.api) return;
+  window.pywebview.api.get_installed_programs().then(function(raw) {
+    var data = JSON.parse(raw);
+    if (data.error) {
+      document.getElementById('desinstaLoadingEl').innerHTML =
+        '<div style="font-size:13px;color:#B91C1C;padding:16px">&#x26A0;&#xFE0F; Error: ' + _escHtml(data.error) + '</div>';
+      return;
+    }
+    _desinstaPrograms = data;
+    var el = document.getElementById('desinstaProgList');
+    if (!data.length) {
+      el.innerHTML = '<div style="text-align:center;padding:20px;color:var(--txt2)">No se encontraron programas instalados.</div>';
+    } else {
+      el.innerHTML = data.map(function(p, i) {
+        return '<div style="background:var(--card-bg);border:1px solid var(--card-bd);border-radius:10px;padding:10px 14px;margin-bottom:6px;display:flex;align-items:center;gap:10px">'
+          + '<div style="flex:1;min-width:0">'
+          + '<div style="font-size:14px;font-weight:600;color:var(--txt);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + _escHtml(p.name) + '</div>'
+          + (p.version ? '<div style="font-size:12px;color:var(--txt2);margin-top:2px">' + _escHtml(p.version) + '</div>' : '')
+          + '</div>'
+          + '<button onclick="confirmarDesinstalacion(' + i + ')" style="flex-shrink:0;background:rgba(239,68,68,0.12);color:#B91C1C;border:1px solid rgba(239,68,68,0.25);border-radius:8px;padding:5px 12px;font-size:12px;font-weight:600;cursor:pointer;font-family:var(--font-ui)">Desinstalar</button>'
+          + '</div>';
+      }).join('');
+    }
+    document.getElementById('desinstaLoadingEl').style.display = 'none';
+    el.style.display = '';
+  }).catch(function() {
+    document.getElementById('desinstaLoadingEl').innerHTML =
+      '<div style="font-size:13px;color:#B91C1C;padding:16px">&#x26A0;&#xFE0F; No se pudo cargar la lista de programas.</div>';
+  });
+}
+
+function confirmarDesinstalacion(idx) {
+  _desinstaSelected = _desinstaPrograms[idx];
+  if (!_desinstaSelected) return;
+  document.getElementById('desinstaConfirmName').textContent       = _desinstaSelected.name;
+  document.getElementById('desinstaListSection').style.display     = 'none';
+  document.getElementById('desinstaConfirmSection').style.display  = '';
+}
+
+function volverAListaDesinstala() {
+  _desinstaSelected = null;
+  document.getElementById('desinstaConfirmSection').style.display = 'none';
+  document.getElementById('desinstaListSection').style.display    = '';
+}
+
+function ejecutarDesinstalacion(forzada) {
+  if (!_desinstaSelected) return;
+  var nombre = _desinstaSelected.name;
+  var cmd    = _desinstaSelected.uninstall;
+  document.getElementById('desinstaConfirmSection').style.display  = 'none';
+  document.getElementById('desinstaProgressSection').style.display = '';
+  document.getElementById('desinstaProgLabel').textContent         = nombre;
+  window.pywebview.api.uninstall_program(cmd, forzada).then(function(raw) {
+    var d = JSON.parse(raw);
+    document.getElementById('desinstaProgressSection').style.display = 'none';
+    document.getElementById('desinstaResultSection').style.display   = '';
+    if (d.error) {
+      document.getElementById('desinstaResultIcon').innerHTML  = '&#x26A0;&#xFE0F;';
+      document.getElementById('desinstaResultMsg').textContent = 'Error: ' + d.error;
+    } else {
+      document.getElementById('desinstaResultIcon').innerHTML  = forzada ? '&#x1F4A5;' : '&#x2705;';
+      document.getElementById('desinstaResultMsg').textContent = forzada ? 'Eliminado sin dejar rastro' : 'Programa desinstalado correctamente';
+    }
+  }).catch(function() {
+    document.getElementById('desinstaProgressSection').style.display = 'none';
+    document.getElementById('desinstaResultSection').style.display   = '';
+    document.getElementById('desinstaResultIcon').innerHTML  = '&#x26A0;&#xFE0F;';
+    document.getElementById('desinstaResultMsg').textContent = 'Error inesperado durante la desinstalaci\xF3n.';
+  });
+}
+
+function cerrarModalDesinstalador() {
+  document.getElementById('desinstaModal').classList.remove('open');
+  _desinstaSelected = null;
+}
+
+function cerrarDesinstaOv(e) {
+  if (e.target === document.getElementById('desinstaModal')) cerrarModalDesinstalador();
 }
 
 // ── Limpiar Sistema modal ────────────────────────────────────────────────
