@@ -39,6 +39,15 @@ def resource_path(rel):
     return os.path.join(base, rel)
 
 
+# ── Assets pre-cargados a nivel módulo (embebidos directo en HTML) ─────────
+_office_icon_src = ""
+try:
+    with open(resource_path("assets/office_icon.png"), "rb") as _f:
+        _office_icon_src = "data:image/png;base64," + base64.b64encode(_f.read()).decode()
+except Exception:
+    pass
+
+
 # ── Formatting helpers ────────────────────────────────────────────────────
 def _fb(n):
     for u in ("B", "KB", "MB", "GB", "TB"):
@@ -2312,6 +2321,17 @@ class Api:
         except Exception as e:
             return json.dumps({"error": str(e)})
 
+    def abrir_windows_update(self):
+        try:
+            subprocess.Popen(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                 "Start-Process 'ms-settings:windowsupdate-action'"],
+                **_NWIN
+            )
+            return json.dumps({"status": "ok"})
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
     # ── Optimizar Windows (WinUtil) ───────────────────────────────────
     def launch_winutil(self):
         try:
@@ -2588,7 +2608,8 @@ html[data-theme="light"] .bay-stripe { background: rgba(255,255,255,.15); }
 .disk-name { color: var(--txt); font-weight: 600; font-family: var(--font-mono); }
 
 /* ── Diagnóstico actions ── */
-.diag-actions { display: flex; align-items: center; gap: 10px; padding: 0 20px 10px; flex-shrink: 0; }
+.diag-actions { display: flex; align-items: center; gap: 6px; padding: 0 20px 10px; flex-shrink: 0; flex-wrap: nowrap; }
+.diag-actions .btn { font-size: 12px; padding: 6px 12px; border-radius: 8px; }
 #repPreview {
   width: 100%; height: 100%; object-fit: contain;
   padding: 12px; box-sizing: border-box; border-radius: var(--radius);
@@ -3030,7 +3051,7 @@ html[data-theme="light"] .net-sum-stat { background:rgba(255,255,255,.6); }
   <div class="sw-cards-row">
     <div class="sw-card">
       <div class="sw-card-hdr">
-        <span class="sw-card-icon">&#x1F4E6;</span>
+        <img class="sw-card-icon" src="__OFFICE_ICON_SRC__" style="width:28px;height:28px;object-fit:contain;" alt="Office">
         <span class="sw-card-title">Office 365</span>
       </div>
       <div class="sw-card-btns">
@@ -3059,6 +3080,7 @@ html[data-theme="light"] .net-sum-stat { background:rgba(255,255,255,.6); }
   <button class="btn btn-t" onclick="openNetModal()">&#x26A1; Pulso de Red</button>
   <button class="btn btn-t" onclick="abrirModalLimpieza()">&#x1F9F9; Limpiar Sistema</button>
   <button class="btn btn-t" onclick="abrirAdminDispositivos()">&#x2699;&#xFE0F; Inspector de Dispositivos</button>
+  <button class="btn btn-t" onclick="abrirWindowsUpdate()">&#x1F6E1;&#xFE0F; Windows al D&iacute;a</button>
 </div>
 <img id="mascotMain" style="display:none" src="" alt="">
 <div id="emptyState" style="display:none"></div>
@@ -4872,6 +4894,10 @@ function abrirAdminDispositivos() {
   window.pywebview.api.abrir_admin_dispositivos();
 }
 
+function abrirWindowsUpdate() {
+  window.pywebview.api.abrir_windows_update();
+}
+
 window.addEventListener('resize', () => { _drawCPUFrame(_cpuDisp); drawRAM(_lastRamPct); });
 </script>
 </body>
@@ -4902,9 +4928,10 @@ def _request_admin():
 def main():
     _request_admin()
     api = Api()
+    _html = HTML.replace("__OFFICE_ICON_SRC__", _office_icon_src)
     window = webview.create_window(
         "PC HOUSE — Diagnóstico PC",
-        html=HTML,
+        html=_html,
         js_api=api,
         width=1100,
         height=720,
