@@ -182,6 +182,48 @@ class Api:
         with self._lock:
             return json.dumps(self._disk_activity)
 
+    @staticmethod
+    def _detectar_notebook():
+        # Capa 1: Win32_SystemEnclosure ChassisTypes
+        try:
+            r = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                 "Get-WmiObject Win32_SystemEnclosure | Select-Object -ExpandProperty ChassisTypes | ConvertTo-Json -Compress"],
+                capture_output=True, text=True, timeout=10, **_NWIN,
+            )
+            if r.returncode == 0 and r.stdout.strip():
+                raw = json.loads(r.stdout.strip())
+                chassis = [raw] if isinstance(raw, int) else list(raw)
+                if any(c in {8, 9, 10, 11, 12, 14, 18, 21} for c in chassis):
+                    return True
+        except Exception:
+            pass
+        # Capa 2: Win32_ComputerSystem PCSystemType (2 = Mobile)
+        try:
+            r = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                 "Get-WmiObject Win32_ComputerSystem | Select-Object -ExpandProperty PCSystemType"],
+                capture_output=True, text=True, timeout=10, **_NWIN,
+            )
+            if r.returncode == 0 and r.stdout.strip():
+                if int(r.stdout.strip()) == 2:
+                    return True
+        except Exception:
+            pass
+        # Capa 3: Presencia de batería (las notebooks siempre tienen)
+        try:
+            r = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                 "(Get-WmiObject Win32_Battery | Measure-Object).Count"],
+                capture_output=True, text=True, timeout=10, **_NWIN,
+            )
+            if r.returncode == 0 and r.stdout.strip():
+                if int(r.stdout.strip()) > 0:
+                    return True
+        except Exception:
+            pass
+        return False
+
     def get_system_info(self):
         try:
             result = {}
@@ -197,6 +239,15 @@ class Api:
                 capture_output=True, text=True, timeout=10, **_NWIN)
             if r.returncode == 0 and r.stdout.strip():
                 result["bios"] = json.loads(r.stdout.strip())
+            is_notebook = Api._detectar_notebook()
+            result["is_notebook"] = is_notebook
+            if is_notebook:
+                r = subprocess.run(
+                    ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                     "Get-WmiObject Win32_ComputerSystem | Select-Object Manufacturer,Model | ConvertTo-Json -Compress"],
+                    capture_output=True, text=True, timeout=10, **_NWIN)
+                if r.returncode == 0 and r.stdout.strip():
+                    result["notebook"] = json.loads(r.stdout.strip())
             r = subprocess.run(
                 ["powershell", "-NoProfile", "-NonInteractive", "-Command",
                  "Get-WmiObject Win32_VideoController | Select-Object Name,AdapterRAM,CurrentHorizontalResolution,CurrentVerticalResolution | ConvertTo-Json -Compress"],
@@ -4474,20 +4525,39 @@ function abrirModalADN() {
       var bios = d.bios || {};
       var gpus = d.gpu || [];
       var os = d.os || {};
+      var nb = d.notebook || {};
+      var isNb = !!d.is_notebook;
       var h = '';
-      h += _adnSecHdr('&#x1F5A5;&#xFE0F;', 'PLACA MADRE', true);
-      h += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">';
-      h += _adnCard('FABRICANTE', mb.Manufacturer || 'N/D');
-      h += _adnCard('MODELO', mb.Product || 'N/D');
-      h += '</div>';
-      h += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">';
-      h += _adnCard('BIOS', bios.SMBIOSBIOSVersion || 'N/D');
-      h += _adnCard('FECHA BIOS', _adnFmtBiosDate(bios.ReleaseDate));
-      h += '</div>';
-      _adnFab = mb.Manufacturer || '';
-      _adnMod = mb.Product || '';
-      if (_adnMod) {
-        h += '<button onclick="buscarDrivers(_adnFab,_adnMod)" style="background:#1A56C4;color:white;border:none;border-radius:10px;padding:10px 20px;font-size:14px;font-weight:600;font-family:var(--font-ui);cursor:pointer;width:100%;margin-top:12px">&#x1F50D; Buscar Drivers Oficiales</button>';
+      if (isNb) {
+        h += _adnSecHdr('&#x1F4BB;', 'NOTEBOOK', true);
+        h += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">';
+        h += _adnCard('FABRICANTE', nb.Manufacturer || 'N/D');
+        h += _adnCard('MODELO', nb.Model || 'N/D');
+        h += '</div>';
+        h += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">';
+        h += _adnCard('BIOS', bios.SMBIOSBIOSVersion || 'N/D');
+        h += _adnCard('FECHA BIOS', _adnFmtBiosDate(bios.ReleaseDate));
+        h += '</div>';
+        _adnFab = nb.Manufacturer || '';
+        _adnMod = nb.Model || '';
+        if (_adnMod) {
+          h += '<button onclick="buscarProducto(_adnFab,_adnMod,true)" style="background:#1A56C4;color:white;border:none;border-radius:10px;padding:10px 20px;font-size:14px;font-weight:600;font-family:var(--font-ui);cursor:pointer;width:100%;margin-top:12px">&#x1F50D; Ver p\xE1gina oficial del modelo</button>';
+        }
+      } else {
+        h += _adnSecHdr('&#x1F5A5;&#xFE0F;', 'PLACA MADRE', true);
+        h += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">';
+        h += _adnCard('FABRICANTE', mb.Manufacturer || 'N/D');
+        h += _adnCard('MODELO', mb.Product || 'N/D');
+        h += '</div>';
+        h += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">';
+        h += _adnCard('BIOS', bios.SMBIOSBIOSVersion || 'N/D');
+        h += _adnCard('FECHA BIOS', _adnFmtBiosDate(bios.ReleaseDate));
+        h += '</div>';
+        _adnFab = mb.Manufacturer || '';
+        _adnMod = mb.Product || '';
+        if (_adnMod) {
+          h += '<button onclick="buscarProducto(_adnFab,_adnMod,false)" style="background:#1A56C4;color:white;border:none;border-radius:10px;padding:10px 20px;font-size:14px;font-weight:600;font-family:var(--font-ui);cursor:pointer;width:100%;margin-top:12px">&#x1F50D; Buscar Drivers Oficiales</button>';
+        }
       }
       h += _adnSecHdr('&#x1F3AE;', 'TARJETA DE VIDEO', false);
       if (gpus.length === 0) {
@@ -4535,38 +4605,53 @@ function cerrarModalADN() {
 function cerrarModalADNOv(e) {
   if (e.target === document.getElementById('adnModal')) cerrarModalADN();
 }
-function buscarDrivers(fabricante, modelo) {
+function buscarProducto(fabricante, modelo, esNotebook) {
   var fab = fabricante.toLowerCase();
   var url = '';
   var modeloEncoded = encodeURIComponent(modelo);
-  if (fab.includes('asus')) {
-    url = 'https://www.asus.com/search/?q=' + modeloEncoded;
-  } else if (fab.includes('msi')) {
-    url = 'https://www.msi.com/search?keyword=' + modeloEncoded + '&cate=app_motherboard';
-  } else if (fab.includes('gigabyte') || fab.includes('giga-byte')) {
-    url = 'https://www.gigabyte.com/Search?q=' + modeloEncoded + '&sc=Motherboard';
-  } else if (fab.includes('asrock')) {
-    url = 'https://www.asrock.com/search/?q=' + modeloEncoded;
-  } else if (fab.includes('hp') || fab.includes('hewlett')) {
-    url = 'https://support.hp.com/us-en/search/results?query=' + modeloEncoded;
-  } else if (fab.includes('dell')) {
-    url = 'https://www.dell.com/support/home/en-us?q=' + modeloEncoded;
-  } else if (fab.includes('lenovo')) {
-    url = 'https://support.lenovo.com/us/en/search?query=' + modeloEncoded;
-  } else if (fab.includes('acer')) {
-    url = 'https://www.acer.com/us-en/search?q=' + modeloEncoded;
-  } else if (fab.includes('biostar')) {
-    url = 'https://www.biostar.com.tw/app/en/search.php?keyword=' + modeloEncoded;
-  } else if (fab.includes('evga')) {
-    url = 'https://www.evga.com/products/productlist.aspx?type=0&family=Motherboard&pn=' + modeloEncoded;
-  } else if (fab.includes('intel')) {
-    url = 'https://ark.intel.com/content/www/us/en/ark/search.html?_intl_lang=en&q=' + modeloEncoded;
-  } else if (fab.includes('toshiba') || fab.includes('dynabook')) {
-    url = 'https://support.dynabook.com/support/viewProductDetail?q=' + modeloEncoded;
-  } else if (fab.includes('samsung')) {
-    url = 'https://www.samsung.com/us/support/search/?searchvalue=' + modeloEncoded;
+  if (esNotebook) {
+    if (fab.includes('hp') || fab.includes('hewlett')) {
+      url = 'https://support.hp.com/us-en/search/results?query=' + modeloEncoded;
+    } else if (fab.includes('dell')) {
+      url = 'https://www.dell.com/support/home/en-us?q=' + modeloEncoded;
+    } else if (fab.includes('lenovo')) {
+      url = 'https://support.lenovo.com/us/en/search?query=' + modeloEncoded;
+    } else if (fab.includes('asus')) {
+      url = 'https://www.asus.com/search/?q=' + modeloEncoded;
+    } else if (fab.includes('acer')) {
+      var modeloAcer = modelo.replace(/\s+/g, '_');
+      url = 'https://www.acer.com/us-en/support/product-support/' + modeloAcer;
+    } else if (fab.includes('msi')) {
+      url = 'https://www.msi.com/search?keyword=' + modeloEncoded + '&cate=app_laptop';
+    } else if (fab.includes('samsung')) {
+      url = 'https://www.samsung.com/us/support/search/?searchvalue=' + modeloEncoded;
+    } else if (fab.includes('toshiba') || fab.includes('dynabook')) {
+      url = 'https://support.dynabook.com/support/viewProductDetail?q=' + modeloEncoded;
+    } else if (fab.includes('sony')) {
+      url = 'https://www.sony.com/en/support/search/?q=' + modeloEncoded;
+    } else if (fab.includes('lg')) {
+      url = 'https://www.lg.com/us/support/search?q=' + modeloEncoded;
+    } else {
+      url = 'https://www.google.com/search?q=' + encodeURIComponent(fabricante + ' ' + modelo + ' notebook p\xE1gina oficial');
+    }
   } else {
-    url = 'https://www.google.com/search?q=' + encodeURIComponent(fabricante + ' ' + modelo + ' placa madre sitio oficial');
+    if (fab.includes('asus')) {
+      url = 'https://www.asus.com/search/?q=' + modeloEncoded;
+    } else if (fab.includes('msi')) {
+      url = 'https://www.msi.com/search?keyword=' + modeloEncoded + '&cate=app_motherboard';
+    } else if (fab.includes('gigabyte') || fab.includes('giga-byte')) {
+      url = 'https://www.gigabyte.com/Search?q=' + modeloEncoded + '&sc=Motherboard';
+    } else if (fab.includes('asrock')) {
+      url = 'https://www.asrock.com/search/?q=' + modeloEncoded;
+    } else if (fab.includes('biostar')) {
+      url = 'https://www.biostar.com.tw/app/en/search.php?keyword=' + modeloEncoded;
+    } else if (fab.includes('evga')) {
+      url = 'https://www.evga.com/products/productlist.aspx?type=0&family=Motherboard&pn=' + modeloEncoded;
+    } else if (fab.includes('intel')) {
+      url = 'https://ark.intel.com/content/www/us/en/ark/search.html?_intl_lang=en&q=' + modeloEncoded;
+    } else {
+      url = 'https://www.google.com/search?q=' + encodeURIComponent(fabricante + ' ' + modelo + ' placa madre sitio oficial');
+    }
   }
   window.pywebview.api.abrir_url(url);
 }
