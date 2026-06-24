@@ -2305,6 +2305,13 @@ class Api:
         except Exception as e:
             return json.dumps({"error": str(e)})
 
+    def abrir_admin_dispositivos(self):
+        try:
+            subprocess.Popen(["devmgmt.msc"], shell=True, **_NWIN)
+            return json.dumps({"status": "ok"})
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
     # ── Optimizar Windows (WinUtil) ───────────────────────────────────
     def launch_winutil(self):
         try:
@@ -3051,6 +3058,7 @@ html[data-theme="light"] .net-sum-stat { background:rgba(255,255,255,.6); }
   <button class="btn btn-t" onclick="openThermoModal()">&#x1F321;&#xFE0F; Term&oacute;metro</button>
   <button class="btn btn-t" onclick="openNetModal()">&#x26A1; Pulso de Red</button>
   <button class="btn btn-t" onclick="abrirModalLimpieza()">&#x1F9F9; Limpiar Sistema</button>
+  <button class="btn btn-t" onclick="abrirAdminDispositivos()">&#x2699;&#xFE0F; Inspector de Dispositivos</button>
 </div>
 <img id="mascotMain" style="display:none" src="" alt="">
 <div id="emptyState" style="display:none"></div>
@@ -4858,6 +4866,10 @@ function cerrarModalLimpieza() {
 
 function cerrarModalLimpiezaOv(e) {
   if (e.target === document.getElementById('cleanModal')) cerrarModalLimpieza();
+}
+
+function abrirAdminDispositivos() {
+  window.pywebview.api.abrir_admin_dispositivos();
 }
 
 window.addEventListener('resize', () => { _drawCPUFrame(_cpuDisp); drawRAM(_lastRamPct); });
