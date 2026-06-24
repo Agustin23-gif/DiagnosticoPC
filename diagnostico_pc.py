@@ -2325,7 +2325,7 @@ class Api:
         try:
             subprocess.Popen(
                 ["powershell", "-NoProfile", "-NonInteractive", "-Command",
-                 "Start-Process 'ms-settings:windowsupdate-action'"],
+                 "Start-Process 'ms-settings:windowsupdate'"],
                 **_NWIN
             )
             return json.dumps({"status": "ok"})
