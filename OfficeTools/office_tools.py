@@ -38,15 +38,32 @@ except Exception:
 class Api:
     def deploy_office(self):
         try:
-            base       = get_base_path()
-            office_exe = os.path.join(base, 'tools', 'office', 'setup.exe')
-            if not os.path.exists(office_exe):
-                msg = ("No se encontró el instalador de Office. "
-                       "Asegurate de que la carpeta tools\\office\\ esté junto al .exe")
-                webview.windows[0].evaluate_js(f"mostrarError({json.dumps(msg)})")
-                return json.dumps({"error": "instalador no encontrado"})
-            subprocess.Popen([office_exe], **_NWIN)
-            return json.dumps({"ok": True})
+            base        = get_base_path()
+            office_path = os.path.join(base, 'tools', 'office', 'setup.exe')
+            config_path = os.path.join(base, 'tools', 'office', 'configuracion.xml')
+
+            if not os.path.exists(office_path):
+                return json.dumps({"error": "No se encontró setup.exe"})
+
+            if not os.path.exists(config_path):
+                return json.dumps({"error": "No se encontró configuracion.xml"})
+
+            result = subprocess.run(
+                [office_path, '/configure', config_path],
+                capture_output=True,
+                text=True,
+                timeout=300
+            )
+
+            if result.returncode == 0:
+                return json.dumps({"status": "ok"})
+            else:
+                stderr = result.stderr.strip() if result.stderr else ""
+                return json.dumps({
+                    "error": f"Error código {result.returncode}: {stderr}"
+                })
+        except subprocess.TimeoutExpired:
+            return json.dumps({"error": "Tiempo de espera agotado (300 s)"})
         except Exception as e:
             return json.dumps({"error": str(e)})
 
@@ -231,7 +248,7 @@ body {
 
 <div class="footer">PC House &copy; 2026</div>
 
-<!-- Error toast — z-index 2000, encima de modales -->
+<!-- Error toast -->
 <div id="errorToast" style="display:none;position:fixed;bottom:20px;left:50%;
   transform:translateX(-50%);background:#FEE2E2;border:1px solid #FCA5A5;
   border-radius:10px;padding:12px 20px;font-size:13px;color:#B91C1C;font-weight:600;
@@ -239,6 +256,16 @@ body {
   box-shadow:0 4px 20px rgba(0,0,0,0.18);cursor:pointer;"
   onclick="this.style.display='none'">
   <span id="errorToastMsg"></span>
+</div>
+
+<!-- Success toast -->
+<div id="successToast" style="display:none;position:fixed;bottom:20px;left:50%;
+  transform:translateX(-50%);background:#DCFCE7;border:1px solid #86EFAC;
+  border-radius:10px;padding:12px 20px;font-size:13px;color:#166534;font-weight:600;
+  z-index:2000;max-width:420px;text-align:center;
+  box-shadow:0 4px 20px rgba(0,0,0,0.18);cursor:pointer;"
+  onclick="this.style.display='none'">
+  <span id="successToastMsg"></span>
 </div>
 
 <!-- MODAL: Desplegar Office -->
@@ -312,22 +339,19 @@ function cerrarModalOffice() {
 function confirmarInstalar() {
   var btn = document.getElementById('btnInstalar');
   btn.disabled = true;
-  btn.textContent = 'Iniciando...';
+  btn.textContent = 'Instalando...';
   window.pywebview.api.deploy_office().then(function(raw) {
-    var res = JSON.parse(raw);
-    if (res.error) {
-      var el = document.getElementById('officeErr');
-      el.style.display = 'block';
-      el.textContent = res.error;
+    var data = JSON.parse(raw);
+    if (data.error) {
+      mostrarError('Error: ' + data.error);
       btn.disabled = false;
       btn.textContent = 'Reintentar';
     } else {
       cerrarModalOffice();
+      mostrarExito('Office instalado correctamente');
     }
   }).catch(function(err) {
-    var el = document.getElementById('officeErr');
-    el.style.display = 'block';
-    el.textContent = 'Error: ' + err;
+    mostrarError('Error: ' + err);
     btn.disabled = false;
     btn.textContent = 'Reintentar';
   });
@@ -379,6 +403,15 @@ function mostrarError(msg) {
   msgEl.textContent = msg;
   el.style.display = 'block';
   setTimeout(function() { el.style.display = 'none'; }, 6000);
+}
+
+function mostrarExito(msg) {
+  var el    = document.getElementById('successToast');
+  var msgEl = document.getElementById('successToastMsg');
+  if (!el || !msgEl) return;
+  msgEl.textContent = msg;
+  el.style.display = 'block';
+  setTimeout(function() { el.style.display = 'none'; }, 4000);
 }
 </script>
 </body>
