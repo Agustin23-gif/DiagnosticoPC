@@ -2346,6 +2346,88 @@ class Api:
         except Exception as e:
             return json.dumps({"error": str(e)})
 
+    # ── BitLocker ──────────────────────────────────────────────────────
+    def get_bitlocker_status(self):
+        try:
+            r = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                 "Get-BitLockerVolume | Select-Object MountPoint,VolumeStatus,"
+                 "ProtectionStatus,EncryptionPercentage,VolumeType | "
+                 "ConvertTo-Json -Compress"],
+                capture_output=True, text=True, timeout=15, **_NWIN,
+            )
+            if r.returncode == 0 and r.stdout.strip():
+                raw = json.loads(r.stdout.strip())
+                volumes = [raw] if isinstance(raw, dict) else raw
+                return json.dumps(volumes)
+            return json.dumps([])
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
+    def enable_bitlocker(self, drive, method, password):
+        try:
+            drive  = drive.rstrip("\\")
+            # Single-quoted PS literal; double any embedded ' to avoid breaking out of it
+            secret = (password or "").replace("'", "''")
+
+            if method == "password":
+                ps_cmd = (
+                    f"$secure = ConvertTo-SecureString '{secret}' -AsPlainText -Force; "
+                    f'Enable-BitLocker -MountPoint "{drive}" -PasswordProtector -Password $secure; '
+                    f'$key = (Get-BitLockerVolume -MountPoint "{drive}").KeyProtector '
+                    f'| Where-Object {{$_.KeyProtectorType -eq "RecoveryPassword"}}; '
+                    f'if(-not $key) {{ Add-BitLockerKeyProtector -MountPoint "{drive}" -RecoveryPasswordProtector }}; '
+                    f'(Get-BitLockerVolume -MountPoint "{drive}").KeyProtector '
+                    f'| Where-Object {{$_.KeyProtectorType -eq "RecoveryPassword"}} '
+                    f'| Select-Object -ExpandProperty RecoveryPassword'
+                )
+            elif method == "pin":
+                ps_cmd = (
+                    f"$secure = ConvertTo-SecureString '{secret}' -AsPlainText -Force; "
+                    f'Enable-BitLocker -MountPoint "{drive}" -TPMandPinProtector -Pin $secure; '
+                    f'$key = (Get-BitLockerVolume -MountPoint "{drive}").KeyProtector '
+                    f'| Where-Object {{$_.KeyProtectorType -eq "RecoveryPassword"}}; '
+                    f'if(-not $key) {{ Add-BitLockerKeyProtector -MountPoint "{drive}" -RecoveryPasswordProtector }}; '
+                    f'(Get-BitLockerVolume -MountPoint "{drive}").KeyProtector '
+                    f'| Where-Object {{$_.KeyProtectorType -eq "RecoveryPassword"}} '
+                    f'| Select-Object -ExpandProperty RecoveryPassword'
+                )
+            else:  # tpm
+                ps_cmd = (
+                    f'Enable-BitLocker -MountPoint "{drive}" -TpmProtector; '
+                    f'Add-BitLockerKeyProtector -MountPoint "{drive}" -RecoveryPasswordProtector; '
+                    f'(Get-BitLockerVolume -MountPoint "{drive}").KeyProtector '
+                    f'| Where-Object {{$_.KeyProtectorType -eq "RecoveryPassword"}} '
+                    f'| Select-Object -ExpandProperty RecoveryPassword'
+                )
+
+            r = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_cmd],
+                capture_output=True, text=True, timeout=60, **_NWIN,
+            )
+
+            recovery_key = r.stdout.strip() if r.stdout.strip() else "No disponible"
+
+            if r.returncode == 0:
+                return json.dumps({"status": "ok", "recovery_key": recovery_key})
+            return json.dumps({"error": r.stderr.strip() or "Error al activar BitLocker"})
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
+    def disable_bitlocker(self, drive):
+        try:
+            drive = drive.rstrip("\\")
+            r = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                 f'Disable-BitLocker -MountPoint "{drive}"'],
+                capture_output=True, text=True, timeout=30, **_NWIN,
+            )
+            if r.returncode == 0:
+                return json.dumps({"status": "ok"})
+            return json.dumps({"error": r.stderr.strip() or "Error al desactivar"})
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
 
 # ── HTML UI ───────────────────────────────────────────────────────────────
 HTML = """<!DOCTYPE html>
@@ -2868,6 +2950,27 @@ html[data-theme="dark"] .btn-wh-run:hover:not(:disabled) { background:rgba(0,57,
 .btn-wu-confirm { padding:6px 20px; border-radius:6px; border:none; background:var(--brand); color:#fff; font-family:var(--font-ui); font-size:12px; font-weight:600; cursor:pointer; transition:background .2s; }
 .btn-wu-confirm:hover:not(:disabled) { background:#002D8C; }
 .btn-wu-confirm:disabled { opacity:.5; cursor:default; }
+/* ── BitLocker modal ──────────────────────────────────────────────── */
+.bl-vol-card { border-radius:12px; padding:14px 16px; margin-bottom:10px; }
+html[data-theme="dark"]  .bl-vol-card { background:#080E1C; border:1px solid #1A2540; }
+html[data-theme="light"] .bl-vol-card { background:#F9FAFB; border:1px solid #E5E7EB; }
+.bl-vol-hdr { display:flex; align-items:center; gap:12px; margin-bottom:10px; }
+.bl-vol-letter { font-family:var(--font-mono); font-size:22px; font-weight:700; color:var(--brand); min-width:38px; }
+.bl-vol-info { flex:1; min-width:0; }
+.bl-vol-name { font-size:13px; font-weight:500; color:var(--txt); }
+.bl-vol-pct  { font-size:11px; font-weight:300; color:var(--txt2); margin-top:2px; }
+.bl-badge { font-size:11px; font-weight:600; padding:3px 10px; border-radius:999px; white-space:nowrap; flex-shrink:0; }
+.bl-badge-on   { background:rgba(34,197,94,.12);   color:#15803D; }
+.bl-badge-off  { background:rgba(122,141,168,.14); color:var(--txt2); }
+.bl-badge-busy { background:rgba(245,158,11,.15);  color:#B45309; }
+.bl-badge-bad  { background:rgba(239,68,68,.12);   color:#B91C1C; }
+.bl-input { width:100%; background:var(--inp-bg); border:1px solid var(--inp-bd); border-radius:var(--radius-sm); color:var(--txt); font-family:var(--font-ui); font-size:13px; padding:8px 11px; outline:none; margin-top:8px; }
+.bl-input:focus { border-color:var(--brand); }
+.bl-action-btn { width:100%; padding:9px; border-radius:var(--radius-sm); font-size:12.5px; font-weight:600; cursor:pointer; border:none; transition:opacity .15s; }
+.bl-action-btn:hover:not(:disabled) { opacity:.88; }
+.bl-action-btn.on  { background:var(--brand); color:#fff; }
+.bl-action-btn.off { background:rgba(239,68,68,0.10); color:#B91C1C; border:1px solid rgba(239,68,68,0.25); }
+.bl-action-btn:disabled { opacity:.45; cursor:not-allowed; }
 /* ── Taller de Software ─────────────────────────────────────────── */
 .sw-section { padding: 2px 20px 8px; flex-shrink: 0; }
 .sw-cards-row { display: flex; gap: 12px; flex-wrap: wrap; }
@@ -3041,6 +3144,10 @@ html[data-theme="light"] .net-sum-stat { background:rgba(255,255,255,.6); }
       <button class="btn-tool-card" onclick="abrirModalDesinstalador()">
         <span class="tool-icon">&#x1F5D1;&#xFE0F;</span>
         <span>Desinstalar</span>
+      </button>
+      <button class="btn-tool-card" onclick="abrirModalBitLocker()">
+        <span class="tool-icon">&#x1F512;</span>
+        <span>BitLocker</span>
       </button>
     </div>
   </div>
@@ -3416,6 +3523,91 @@ html[data-theme="light"] .net-sum-stat { background:rgba(255,255,255,.6); }
         <div style="font-size:48px;line-height:1;margin-bottom:12px" id="desinstaResultIcon">&#x2705;</div>
         <div style="font-size:18px;font-weight:700;color:var(--txt);margin-bottom:20px" id="desinstaResultMsg">Programa desinstalado correctamente</div>
         <button class="btn btn-p" style="padding:10px 32px;font-size:14px" onclick="cerrarModalDesinstalador()">Cerrar</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="bitlockerModal" class="modal-ov" onclick="cerrarBitlockerOv(event)">
+  <div class="chk-modal-card" style="max-width:520px">
+    <button class="modal-x" onclick="cerrarModalBitLocker()">&#x2715;</button>
+    <div style="font-size:16px;font-weight:700;margin-bottom:4px;color:var(--txt)">&#x1F512; Gestor BitLocker</div>
+    <div style="font-size:12px;color:var(--txt2);margin-bottom:16px">Administr&aacute; el cifrado de tus unidades</div>
+
+    <!-- Estado 1: Lista de unidades -->
+    <div id="blListSection">
+      <div id="blLoadingEl" style="text-align:center;padding:32px 0">
+        <div style="width:40px;height:40px;border:3px solid var(--bar-track);border-top-color:var(--brand);border-radius:50%;animation:spin .8s linear infinite;margin:0 auto 14px"></div>
+        <div style="font-size:14px;color:var(--txt2)">Leyendo unidades&hellip;</div>
+      </div>
+      <div id="blVolList" style="display:none"></div>
+    </div>
+
+    <!-- Estado 2: Activar BitLocker (sub-vista) -->
+    <div id="blActivateSection" style="display:none">
+      <div style="font-size:14px;font-weight:700;margin-bottom:12px;color:var(--txt)" id="blActivateTitle">&#x1F512; Activar BitLocker</div>
+      <div class="chk-opts-wrap">
+        <div class="chk-opt-row sel" id="blMethodPassword" onclick="seleccionarMetodoBitLocker('password')">
+          <input class="chk-opt-radio" type="radio" name="blMethod" checked>
+          <div style="flex:1">
+            <div class="chk-opt-title">&#x1F511; Con contrase&ntilde;a</div>
+            <div id="blPasswordInputs">
+              <input type="password" id="blPass1" class="bl-input" placeholder="Contrase&ntilde;a" onclick="event.stopPropagation()">
+              <input type="password" id="blPass2" class="bl-input" placeholder="Confirmar contrase&ntilde;a" onclick="event.stopPropagation()">
+            </div>
+          </div>
+        </div>
+        <div class="chk-opt-row" id="blMethodPin" onclick="seleccionarMetodoBitLocker('pin')">
+          <input class="chk-opt-radio" type="radio" name="blMethod">
+          <div style="flex:1">
+            <div class="chk-opt-title">&#x1F522; Con PIN num&eacute;rico</div>
+            <div id="blPinInputs" style="display:none">
+              <input type="text" inputmode="numeric" pattern="[0-9]*" id="blPin1" class="bl-input" placeholder="PIN (6-20 d&iacute;gitos)" onclick="event.stopPropagation()">
+              <input type="text" inputmode="numeric" pattern="[0-9]*" id="blPin2" class="bl-input" placeholder="Confirmar PIN" onclick="event.stopPropagation()">
+            </div>
+          </div>
+        </div>
+        <div class="chk-opt-row" id="blMethodTpm" onclick="seleccionarMetodoBitLocker('tpm')">
+          <input class="chk-opt-radio" type="radio" name="blMethod">
+          <div><div class="chk-opt-title">&#x1F916; TPM autom&aacute;tico</div>
+               <div class="chk-opt-desc">Se activar&aacute; autom&aacute;ticamente usando el chip TPM del equipo. No requiere contrase&ntilde;a.</div></div>
+        </div>
+      </div>
+      <div id="blActivateErr" style="font-size:12px;color:var(--red);margin-bottom:10px;display:none"></div>
+      <div style="display:flex;gap:10px;justify-content:flex-end">
+        <button class="btn-chk-confirm-no" onclick="volverAListaBitLocker()">Cancelar</button>
+        <button class="btn-wu-confirm" id="btnBlActivate" onclick="confirmarActivarBitLocker()">Activar</button>
+      </div>
+    </div>
+
+    <!-- Estado 3: Desactivar BitLocker (sub-vista) -->
+    <div id="blDeactivateSection" style="display:none">
+      <div style="font-size:13px;color:var(--txt2);margin-bottom:20px" id="blDeactivateMsg"></div>
+      <div style="display:flex;gap:10px;justify-content:flex-end">
+        <button class="btn-chk-confirm-no" onclick="volverAListaBitLocker()">Cancelar</button>
+        <button class="btn-chk-confirm-yes" onclick="confirmarDesactivarBitLocker()">Desactivar</button>
+      </div>
+    </div>
+
+    <!-- Estado 4: Progreso -->
+    <div id="blProgressSection" style="display:none">
+      <div style="text-align:center;padding:32px 0">
+        <div style="width:40px;height:40px;border:3px solid var(--bar-track);border-top-color:var(--brand);border-radius:50%;animation:spin .8s linear infinite;margin:0 auto 14px"></div>
+        <div style="font-size:14px;font-weight:600;color:var(--txt)" id="blProgressMsg">&hellip;</div>
+      </div>
+    </div>
+
+    <!-- Estado 5: Resultado -->
+    <div id="blResultSection" style="display:none">
+      <div style="text-align:center;padding:20px 0 8px">
+        <div style="font-size:48px;line-height:1;margin-bottom:12px" id="blResultIcon">&#x2705;</div>
+        <div style="font-size:15px;font-weight:700;color:var(--txt);margin-bottom:8px" id="blResultMsg"></div>
+        <div id="blRecoveryKeyWrap" style="display:none;margin-bottom:16px">
+          <div style="font-size:11px;color:var(--txt2);margin-bottom:6px">Clave de recuperaci&oacute;n &mdash; guardala en un lugar seguro</div>
+          <div class="chk-out-box" id="blRecoveryKeyBox" style="height:auto;padding:12px;font-size:13px;text-align:center;-webkit-user-select:text;user-select:text"></div>
+          <button class="btn-tool-inline" style="margin-top:10px" onclick="copiarClaveRecuperacion()">&#x1F4CB; Copiar clave</button>
+        </div>
+        <button class="btn btn-p" style="padding:10px 32px;font-size:14px" onclick="cerrarModalBitLocker()">Cerrar</button>
       </div>
     </div>
   </div>
@@ -4896,6 +5088,230 @@ function abrirAdminDispositivos() {
 
 function abrirWindowsUpdate() {
   window.pywebview.api.abrir_windows_update();
+}
+
+// ── BitLocker modal ────────────────────────────────────────────────────────
+var _blVolumes = [];
+var _blSelectedDrive = null;
+var _blSelectedMethod = 'password';
+
+function _blBadge(v) {
+  var status = String(v.VolumeStatus || '');
+  var prot = v.ProtectionStatus;
+  if (/EncryptionInProgress|DecryptionInProgress/i.test(status)) {
+    return {cls:'bl-badge-busy', txt:'&#x23F3; Cifrando...', action:'busy'};
+  }
+  if (status === 'FullyEncrypted') {
+    if (prot === 1) return {cls:'bl-badge-on', txt:'&#x1F512; Cifrado', action:'off'};
+    return {cls:'bl-badge-bad', txt:'&#x274C; Protecci\xF3n suspendida', action:'off'};
+  }
+  return {cls:'bl-badge-off', txt:'&#x1F513; Sin cifrar', action:'on'};
+}
+
+function renderBitlockerVols(vols) {
+  _blVolumes = vols;
+  var el = document.getElementById('blVolList');
+  if (!vols.length) {
+    el.innerHTML = '<div style="text-align:center;padding:20px;color:var(--txt2)">No se encontraron unidades compatibles con BitLocker.</div>';
+    return;
+  }
+  el.innerHTML = vols.map(function(v) {
+    var mp = String(v.MountPoint || '').trim();
+    var b = _blBadge(v);
+    var pctTxt = (v.EncryptionPercentage !== undefined && v.EncryptionPercentage !== null) ? v.EncryptionPercentage + '% cifrado' : '';
+    var btnHtml;
+    if (b.action === 'on') {
+      btnHtml = '<button class="bl-action-btn on" onclick="mostrarActivarBitLocker(\'' + mp + '\')">Activar BitLocker</button>';
+    } else if (b.action === 'off') {
+      btnHtml = '<button class="bl-action-btn off" onclick="mostrarDesactivarBitLocker(\'' + mp + '\')">Desactivar</button>';
+    } else {
+      btnHtml = '<button class="bl-action-btn on" disabled>En proceso...</button>';
+    }
+    return '<div class="bl-vol-card">'
+      + '<div class="bl-vol-hdr">'
+      + '<div class="bl-vol-letter">' + mp + '</div>'
+      + '<div class="bl-vol-info"><div class="bl-vol-name">' + _escHtml(v.VolumeType || 'Unidad') + '</div>'
+      + (pctTxt ? '<div class="bl-vol-pct">' + pctTxt + '</div>' : '') + '</div>'
+      + '<span class="bl-badge ' + b.cls + '">' + b.txt + '</span>'
+      + '</div>'
+      + btnHtml
+      + '</div>';
+  }).join('');
+}
+
+function abrirModalBitLocker() {
+  document.getElementById('blListSection').style.display     = '';
+  document.getElementById('blActivateSection').style.display  = 'none';
+  document.getElementById('blDeactivateSection').style.display= 'none';
+  document.getElementById('blProgressSection').style.display  = 'none';
+  document.getElementById('blResultSection').style.display    = 'none';
+  document.getElementById('blLoadingEl').style.display = '';
+  document.getElementById('blLoadingEl').innerHTML =
+    '<div style="width:40px;height:40px;border:3px solid var(--bar-track);border-top-color:var(--brand);border-radius:50%;animation:spin .8s linear infinite;margin:0 auto 14px"></div>'
+    + '<div style="font-size:14px;color:var(--txt2)">Leyendo unidades&hellip;</div>';
+  document.getElementById('blVolList').style.display = 'none';
+  document.getElementById('blVolList').innerHTML = '';
+  document.getElementById('bitlockerModal').classList.add('open');
+  if (!window.pywebview || !window.pywebview.api) return;
+  window.pywebview.api.get_bitlocker_status().then(function(raw) {
+    var data = JSON.parse(raw);
+    if (data.error) {
+      document.getElementById('blLoadingEl').innerHTML =
+        '<div style="font-size:13px;color:#B91C1C;padding:16px">&#x26A0;&#xFE0F; Error: ' + _escHtml(data.error) + '</div>';
+      return;
+    }
+    renderBitlockerVols(Array.isArray(data) ? data : []);
+    document.getElementById('blLoadingEl').style.display = 'none';
+    document.getElementById('blVolList').style.display = '';
+  }).catch(function() {
+    document.getElementById('blLoadingEl').innerHTML =
+      '<div style="font-size:13px;color:#B91C1C;padding:16px">&#x26A0;&#xFE0F; No se pudo consultar el estado de BitLocker.</div>';
+  });
+}
+
+function cerrarModalBitLocker() {
+  document.getElementById('bitlockerModal').classList.remove('open');
+  _blSelectedDrive = null;
+}
+function cerrarBitlockerOv(e) {
+  if (e.target === document.getElementById('bitlockerModal')) cerrarModalBitLocker();
+}
+
+function mostrarActivarBitLocker(unidad) {
+  _blSelectedDrive = unidad;
+  document.getElementById('blActivateTitle').innerHTML = '&#x1F512; Activar BitLocker en ' + _escHtml(unidad);
+  document.getElementById('blPass1').value = '';
+  document.getElementById('blPass2').value = '';
+  document.getElementById('blPin1').value  = '';
+  document.getElementById('blPin2').value  = '';
+  var errEl = document.getElementById('blActivateErr');
+  errEl.style.display = 'none'; errEl.textContent = '';
+  seleccionarMetodoBitLocker('password');
+  var btn = document.getElementById('btnBlActivate');
+  btn.disabled = false; btn.textContent = 'Activar';
+  document.getElementById('blListSection').style.display = 'none';
+  document.getElementById('blActivateSection').style.display = '';
+}
+
+function mostrarDesactivarBitLocker(unidad) {
+  _blSelectedDrive = unidad;
+  document.getElementById('blDeactivateMsg').textContent =
+    '\xBFEst\xE1s seguro que quer\xE9s desactivar el cifrado en ' + unidad + '? Este proceso puede tardar varios minutos.';
+  document.getElementById('blListSection').style.display = 'none';
+  document.getElementById('blDeactivateSection').style.display = '';
+}
+
+function volverAListaBitLocker() {
+  _blSelectedDrive = null;
+  document.getElementById('blActivateSection').style.display   = 'none';
+  document.getElementById('blDeactivateSection').style.display = 'none';
+  document.getElementById('blListSection').style.display = '';
+}
+
+function seleccionarMetodoBitLocker(method) {
+  _blSelectedMethod = method;
+  var map = {password:'blMethodPassword', pin:'blMethodPin', tpm:'blMethodTpm'};
+  Object.keys(map).forEach(function(m) {
+    var row = document.getElementById(map[m]);
+    var radio = row.querySelector('input[type=radio]');
+    if (m === method) { row.classList.add('sel'); radio.checked = true; }
+    else { row.classList.remove('sel'); radio.checked = false; }
+  });
+  document.getElementById('blPasswordInputs').style.display = method === 'password' ? '' : 'none';
+  document.getElementById('blPinInputs').style.display      = method === 'pin'      ? '' : 'none';
+}
+
+function confirmarActivarBitLocker() {
+  var errEl = document.getElementById('blActivateErr');
+  errEl.style.display = 'none'; errEl.textContent = '';
+  var metodo = _blSelectedMethod, clave = '';
+  if (metodo === 'password') {
+    var p1 = document.getElementById('blPass1').value;
+    var p2 = document.getElementById('blPass2').value;
+    if (!p1 || p1.length < 8) {
+      errEl.textContent = 'La contrase\xF1a debe tener al menos 8 caracteres.'; errEl.style.display = 'block'; return;
+    }
+    if (p1 !== p2) {
+      errEl.textContent = 'Las contrase\xF1as no coinciden.'; errEl.style.display = 'block'; return;
+    }
+    clave = p1;
+  } else if (metodo === 'pin') {
+    var n1 = document.getElementById('blPin1').value;
+    var n2 = document.getElementById('blPin2').value;
+    if (!/^[0-9]{6,20}$/.test(n1)) {
+      errEl.textContent = 'El PIN debe tener entre 6 y 20 d\xEDgitos num\xE9ricos.'; errEl.style.display = 'block'; return;
+    }
+    if (n1 !== n2) {
+      errEl.textContent = 'Los PIN no coinciden.'; errEl.style.display = 'block'; return;
+    }
+    clave = n1;
+  }
+  ejecutarActivarBitLocker(_blSelectedDrive, metodo, clave);
+}
+
+function confirmarDesactivarBitLocker() {
+  ejecutarDesactivarBitLocker(_blSelectedDrive);
+}
+
+function ejecutarActivarBitLocker(unidad, metodo, clave) {
+  document.getElementById('blActivateSection').style.display   = 'none';
+  document.getElementById('blDeactivateSection').style.display = 'none';
+  document.getElementById('blProgressSection').style.display   = '';
+  document.getElementById('blProgressMsg').textContent = '🔒 Activando BitLocker en ' + unidad + '...';
+  window.pywebview.api.enable_bitlocker(unidad, metodo, clave).then(function(raw) {
+    var d = JSON.parse(raw);
+    document.getElementById('blProgressSection').style.display = 'none';
+    document.getElementById('blResultSection').style.display   = '';
+    if (d.error) {
+      document.getElementById('blResultIcon').innerHTML = '&#x274C;';
+      document.getElementById('blResultMsg').textContent = 'Error: ' + d.error;
+      document.getElementById('blRecoveryKeyWrap').style.display = 'none';
+    } else {
+      document.getElementById('blResultIcon').innerHTML = '&#x2705;';
+      document.getElementById('blResultMsg').innerHTML =
+        'BitLocker activado correctamente en ' + _escHtml(unidad) + '.<br>'
+        + '<span style="font-weight:400;font-size:12px;color:var(--txt2)">Guard\xE1 tu clave de recuperaci\xF3n en un lugar seguro.</span>';
+      document.getElementById('blRecoveryKeyBox').textContent = d.recovery_key || 'No disponible';
+      document.getElementById('blRecoveryKeyWrap').style.display = '';
+    }
+  }).catch(function(err) {
+    document.getElementById('blProgressSection').style.display = 'none';
+    document.getElementById('blResultSection').style.display   = '';
+    document.getElementById('blResultIcon').innerHTML = '&#x274C;';
+    document.getElementById('blResultMsg').textContent = 'Error inesperado: ' + err;
+    document.getElementById('blRecoveryKeyWrap').style.display = 'none';
+  });
+}
+
+function ejecutarDesactivarBitLocker(unidad) {
+  document.getElementById('blActivateSection').style.display   = 'none';
+  document.getElementById('blDeactivateSection').style.display = 'none';
+  document.getElementById('blProgressSection').style.display   = '';
+  document.getElementById('blProgressMsg').textContent = '🔓 Desactivando BitLocker en ' + unidad + '...';
+  window.pywebview.api.disable_bitlocker(unidad).then(function(raw) {
+    var d = JSON.parse(raw);
+    document.getElementById('blProgressSection').style.display = 'none';
+    document.getElementById('blResultSection').style.display   = '';
+    document.getElementById('blRecoveryKeyWrap').style.display = 'none';
+    if (d.error) {
+      document.getElementById('blResultIcon').innerHTML = '&#x274C;';
+      document.getElementById('blResultMsg').textContent = 'Error: ' + d.error;
+    } else {
+      document.getElementById('blResultIcon').innerHTML = '&#x2705;';
+      document.getElementById('blResultMsg').textContent = 'BitLocker desactivado correctamente en ' + unidad + '.';
+    }
+  }).catch(function(err) {
+    document.getElementById('blProgressSection').style.display = 'none';
+    document.getElementById('blResultSection').style.display   = '';
+    document.getElementById('blRecoveryKeyWrap').style.display = 'none';
+    document.getElementById('blResultIcon').innerHTML = '&#x274C;';
+    document.getElementById('blResultMsg').textContent = 'Error inesperado: ' + err;
+  });
+}
+
+function copiarClaveRecuperacion() {
+  var txt = document.getElementById('blRecoveryKeyBox').textContent;
+  try { navigator.clipboard.writeText(txt); } catch (e) {}
 }
 
 window.addEventListener('resize', () => { _drawCPUFrame(_cpuDisp); drawRAM(_lastRamPct); });
