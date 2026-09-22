@@ -5294,8 +5294,8 @@ def main():
         html=_html,
         js_api=api,
         width=1100,
-        height=720,
-        min_size=(900, 580),
+        height=780,
+        min_size=(900, 680),
         background_color="#FFFFFF",
     )
     webview.start(debug=False)
