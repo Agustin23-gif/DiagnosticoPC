@@ -1043,251 +1043,136 @@ class Api:
                        + logo_src + '">') if logo_src else ""
 
             # ═══════════════════════════════════════════════════════════════════
-            # SECCION 1 — ENCABEZADO
+            # SECCION 1 — ENCABEZADO + ESTADO GENERAL (compacto, integrado)
             # ═══════════════════════════════════════════════════════════════════
+            st_label_map = {"critico": "CRÍTICO", "atencion": "ATENCIÓN", "bueno": "ÓPTIMO"}
+            st_pill = (
+                '<div style="display:inline-block;background:' + st_cbg + ';color:#fff;'
+                'padding:7px 18px;border-radius:99px;font-size:14px;font-weight:700;">'
+                + st_ctxt + '&nbsp;&nbsp;' + st_label_map[estado] + ' &mdash; ' + st_txt + '</div>'
+            )
             s1 = (
-                '<div class="hdr" style="padding:0 28px;">'
-                '<table width="100%" style="height:150px;"><tr>'
+                '<div class="hdr" style="padding:18px 28px 16px;">'
+                '<table width="100%" style="border-collapse:collapse;"><tr>'
 
                 '<td style="vertical-align:middle;width:55%;">'
                 + logo_h +
                 '<span style="display:inline-block;vertical-align:middle;margin-left:14px;">'
-                '<div style="font-size:40px;font-weight:800;line-height:1;color:#ffffff !important;">'
+                '<div style="font-size:30px;font-weight:800;line-height:1;color:#ffffff !important;">'
                 'PC HOUSE</div>'
-                '<div style="font-size:18px;margin-top:5px;opacity:0.85;color:#ffffff !important;">'
+                '<div style="font-size:14px;margin-top:4px;opacity:0.85;color:#ffffff !important;">'
                 'Reporte de Diagn&#243;stico T&#233;cnico</div>'
                 '</span></td>'
 
                 '<td style="vertical-align:middle;text-align:right;">'
-                '<div style="font-size:36px;font-weight:700;line-height:1;color:#ffffff !important;">'
+                '<div style="font-size:24px;font-weight:700;line-height:1;color:#ffffff !important;">'
                 + self._hostname + '</div>'
-                '<div style="font-size:16px;margin-top:7px;opacity:0.85;color:#ffffff !important;">'
-                'Usuario: ' + username + '</div>'
-                '<div style="font-size:16px;margin-top:4px;opacity:0.85;color:#ffffff !important;">'
-                + os_name + '</div>'
-                '<div style="font-size:16px;margin-top:4px;opacity:0.85;color:#ffffff !important;">'
-                + fecha_s + '</div>'
+                '<div style="font-size:13px;margin-top:5px;opacity:0.85;color:#ffffff !important;">'
+                'Usuario: ' + username + ' &middot; ' + fecha_s + '</div>'
                 '</td>'
 
                 '</tr></table>'
+                '<div style="margin-top:12px;">' + st_pill + '</div>'
                 '</div>'
             )
 
             # ═══════════════════════════════════════════════════════════════════
-            # SECCION 2 — ESTADO GENERAL
-            # ═══════════════════════════════════════════════════════════════════
-            s2 = (
-                '<div style="background:' + st_bg + ';border:3px solid ' + st_bdr + ';'
-                'border-radius:16px;box-shadow:0 2px 16px rgba(0,0,0,0.08);'
-                'margin:16px;padding:32px 24px;text-align:center;">'
-
-                # Circulo icono (CSS puro, no emoji)
-                '<div style="width:90px;height:90px;border-radius:50%;background:' + st_cbg + ';'
-                'margin:0 auto 16px;font-size:48px;font-weight:900;color:#fff;'
-                'text-align:center;line-height:90px;">'
-                + st_ctxt + '</div>'
-
-                '<div style="font-size:32px;font-weight:800;color:#1F2937;'
-                'line-height:1.2;margin-bottom:12px;">'
-                + st_txt + '</div>'
-
-                '<div style="font-size:18px;color:#374151;">'
-                + st_sub + '</div>'
-
-                '</div>'
-            )
-
-            # ═══════════════════════════════════════════════════════════════════
-            # SECCION 3 — PROCESADOR (columna unica)
+            # FILA 1 — PROCESADOR | MEMORIA RAM (2 columnas)
             # ═══════════════════════════════════════════════════════════════════
             cpu_c = _clr(cpu_pct)
-            s3 = (
-                '<div style="background:#fff;border-radius:16px;'
-                'box-shadow:0 2px 16px rgba(0,0,0,0.08);margin:16px;padding:24px;">'
-
-                + _card_hdr("&#128421;", "PROCESADOR", cpu_pct) +
-
-                '<div style="font-size:22px;font-weight:700;color:#1F2937;margin-bottom:20px;">'
-                + mod_s + '</div>'
-
-                # Numero grande centrado
-                '<div style="text-align:center;margin-bottom:6px;">'
-                '<span style="font-size:72px;font-weight:800;color:' + cpu_c + ';line-height:1;">'
-                + str(cpu_i) + '%</span>'
-                '</div>'
-                '<div style="text-align:center;font-size:16px;color:#9CA3AF;margin-bottom:20px;">'
-                'de uso actual</div>'
-
-                # Barra horizontal ancho completo
-                + _bar(cpu_pct, h=22) +
-
-                '</div>'
-            )
-
-            # ═══════════════════════════════════════════════════════════════════
-            # SECCION 4 — MEMORIA RAM
-            # ═══════════════════════════════════════════════════════════════════
             ram_c = _clr(ram_pct)
-            # 3 sub-tarjetas: (900 - 32 - 48 - 2*10) / 3 = 800/3 ~ 266px cada una
-            ST = ('display:inline-block;vertical-align:top;background:#F5F8FF;'
-                  'border-radius:12px;padding:14px 16px;width:265px;')
-            LB = ('font-size:12px;color:#9CA3AF;font-weight:600;letter-spacing:1px;'
-                  'text-transform:uppercase;margin-bottom:6px;')
-            NB = 'font-size:28px;font-weight:800;color:#1F2937;line-height:1;'
-            UB = 'font-size:15px;font-weight:600;color:#9CA3AF;'
 
-            ram_rec = ""
-            if ram_pct > 80:
-                ram_rec = (
-                    '<div style="background:#FEF3C7;border-radius:10px;'
-                    'padding:12px 16px;margin-top:14px;font-size:16px;color:#92400E;">'
-                    '! Se recomienda ampliar la RAM</div>'
-                )
+            cpu_inner = (
+                _card_hdr("&#128421;", "PROCESADOR", cpu_pct)
+                + '<div style="font-size:13px;font-weight:600;color:#1F2937;margin-bottom:12px;'
+                  'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + mod_s + '</div>'
+                + '<div style="text-align:center;margin-bottom:10px;">'
+                  '<span style="font-size:44px;font-weight:800;color:' + cpu_c + ';line-height:1;">'
+                  + str(cpu_i) + '%</span></div>'
+                + _bar(cpu_pct, h=14)
+            )
 
-            s4 = (
-                '<div style="background:#fff;border-radius:16px;'
-                'box-shadow:0 2px 16px rgba(0,0,0,0.08);margin:16px;padding:24px;">'
+            ram_inner = (
+                _card_hdr("&#129504;", "MEMORIA RAM", ram_pct)
+                + '<div style="text-align:center;margin-bottom:4px;">'
+                  '<span style="font-size:44px;font-weight:800;color:' + ram_c + ';line-height:1;">'
+                  + str(ram_i) + '%</span></div>'
+                + '<div style="text-align:center;font-size:12px;color:#6B7280;margin-bottom:12px;'
+                  'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'
+                  + str(ram_ug) + ' GB de ' + str(ram_tg) + ' GB &middot; '
+                  + str(ram_typ) + ' ' + str(ram_frq) + ' MHz</div>'
+                + _bar(ram_pct, h=14)
+            )
 
-                + _card_hdr("&#129504;", "MEMORIA RAM", ram_pct) +
-
-                # 3 sub-tarjetas (se permite horizontal dentro de tarjeta)
-                '<div style="margin-bottom:16px;font-size:0;">'
-                '<div style="' + ST + 'margin-right:10px;">'
-                '<div style="' + LB + '">Usada</div>'
-                '<div style="' + NB + '">' + str(ram_ug)
-                + '<span style="' + UB + '"> GB</span></div>'
-                '</div>'
-                '<div style="' + ST + 'margin-right:10px;">'
-                '<div style="' + LB + '">Disponible</div>'
-                '<div style="' + NB + '">' + str(ram_ag)
-                + '<span style="' + UB + '"> GB</span></div>'
-                '</div>'
-                '<div style="' + ST + '">'
-                '<div style="' + LB + '">Tipo / Freq.</div>'
-                '<div style="font-size:22px;font-weight:800;color:#1F2937;line-height:1;">'
-                + str(ram_typ) + '</div>'
-                '<div style="font-size:14px;color:#9CA3AF;margin-top:4px;">'
-                + str(ram_frq) + ' MHz</div>'
-                '</div>'
-                '</div>'
-
-                # Barra de progreso con % al costado
+            CARD = ('background:#fff;border-radius:16px;'
+                    'box-shadow:0 2px 16px rgba(0,0,0,0.08);padding:18px;')
+            s_metrics = (
+                '<div style="margin:16px;">'
                 '<table width="100%" style="border-collapse:collapse;"><tr>'
-                '<td style="vertical-align:middle;">' + _bar(ram_pct, h=20) + '</td>'
-                '<td style="width:64px;text-align:right;vertical-align:middle;'
-                'font-size:24px;font-weight:800;color:' + ram_c + ';padding-left:10px;">'
-                + str(ram_i) + '%</td>'
+                '<td width="50%" style="vertical-align:top;padding-right:8px;">'
+                '<div style="' + CARD + '">' + cpu_inner + '</div></td>'
+                '<td width="50%" style="vertical-align:top;padding-left:8px;">'
+                '<div style="' + CARD + '">' + ram_inner + '</div></td>'
                 '</tr></table>'
-
-                + ram_rec +
                 '</div>'
             )
 
             # ═══════════════════════════════════════════════════════════════════
-            # SECCION 5 — ALMACENAMIENTO
+            # FILA 2 — ALMACENAMIENTO (filas horizontales compactas)
             # ═══════════════════════════════════════════════════════════════════
-            def _disk_block(dh):
+            def _disk_row(dh):
                 dname = str(dh.get("name",    "Disco") or "Disco").strip()
                 dtype = str(dh.get("type",    "N/D")   or "N/D")
                 dsize = str(dh.get("size",    "N/D")   or "N/D")
                 dnum  = dh.get("disk_num", "")
                 dhlth = str(dh.get("health",  "")      or "")
                 dpct  = _dpct(dnum)
-                du, dt = _dusage(dnum)
                 bc    = _clr(dpct)
 
-                # Badge tipo
-                if "NVME" in dtype.upper():
-                    tb, tc = "#EDE9FE", "#5B21B6"
-                elif "SSD" in dtype.upper():
-                    tb, tc = "#DBEAFE", "#1E40AF"
-                else:
-                    tb, tc = "#FEF3C7", "#92400E"
-                t_badge = (
-                    '<span style="background:' + tb + ';color:' + tc + ';'
-                    'padding:4px 14px;border-radius:99px;font-size:14px;font-weight:700;'
-                    'margin-right:8px;">' + (dtype.upper() if dtype != "N/D" else "DISCO")
-                    + '</span>'
-                )
-
-                # Badge salud
                 if dhlth == "Unhealthy":
                     hb, hc, ht = "#FEE2E2", "#DC2626", "FALLAS"
                 elif dhlth == "Warning":
                     hb, hc, ht = "#FEF3C7", "#D97706", "ATENCION"
                 else:
-                    hb, hc, ht = "#D1FAE5", "#059669", "SALUDABLE"
+                    hb, hc, ht = "#D1FAE5", "#059669", "OK"
                 h_badge = (
                     '<span style="background:' + hb + ';color:' + hc + ';'
-                    'padding:4px 14px;border-radius:99px;font-size:14px;font-weight:700;">'
-                    + ht + '</span>'
+                    'padding:3px 10px;border-radius:99px;font-size:11px;font-weight:700;'
+                    'white-space:nowrap;">' + ht + '</span>'
                 )
 
-                # Caja de recomendacion
-                if dhlth == "Unhealthy":
-                    drec = ('<div style="background:#FEE2E2;border-radius:10px;'
-                            'padding:12px 16px;margin-top:10px;font-size:16px;color:#991B1B;">'
-                            '! Respaldá los datos y reemplazá este disco</div>')
-                elif dhlth == "Warning":
-                    drec = ('<div style="background:#FEF3C7;border-radius:10px;'
-                            'padding:12px 16px;margin-top:10px;font-size:16px;color:#92400E;">'
-                            '! Hacé un respaldo de los datos de este disco</div>')
-                elif dpct > 90:
-                    drec = ('<div style="background:#FEE2E2;border-radius:10px;'
-                            'padding:12px 16px;margin-top:10px;font-size:16px;color:#991B1B;">'
-                            '! Disco casi lleno &mdash; liberá espacio urgente</div>')
-                elif dpct > 75:
-                    drec = ('<div style="background:#FEF3C7;border-radius:10px;'
-                            'padding:12px 16px;margin-top:10px;font-size:16px;color:#92400E;">'
-                            '! Poco espacio libre &mdash; consider&#225; liberar archivos</div>')
-                else:
-                    drec = ('<div style="background:#D1FAE5;border-radius:10px;'
-                            'padding:12px 16px;margin-top:10px;font-size:16px;color:#065F46;">'
-                            'Disco en buen estado</div>')
-
                 return (
-                    '<div style="background:#F8FAFF;border-radius:12px;'
-                    'padding:18px 20px;margin-bottom:16px;">'
-
-                    '<table width="100%" style="border-collapse:collapse;margin-bottom:12px;"><tr>'
-                    '<td style="font-size:18px;font-weight:700;color:#1F2937;vertical-align:middle;">'
-                    + dname + '</td>'
-                    '<td style="text-align:right;vertical-align:middle;">'
-                    + t_badge + h_badge + '</td>'
+                    '<table width="100%" style="border-collapse:collapse;margin-bottom:8px;"><tr>'
+                    '<td style="width:180px;vertical-align:middle;">'
+                    '<div style="font-size:14px;font-weight:700;color:#1F2937;'
+                    'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + dname + '</div>'
+                    '<div style="font-size:11px;color:#9CA3AF;">'
+                    + (dtype.upper() if dtype != "N/D" else "DISCO") + ' &middot; ' + dsize + '</div>'
+                    '</td>'
+                    '<td style="vertical-align:middle;padding:0 12px;">' + _bar(dpct, h=12) + '</td>'
+                    '<td style="width:46px;text-align:right;vertical-align:middle;'
+                    'font-size:14px;font-weight:800;color:' + bc + ';">'
+                    + '{:.0f}'.format(dpct) + '%</td>'
+                    '<td style="width:90px;text-align:right;vertical-align:middle;padding-left:10px;">'
+                    + h_badge + '</td>'
                     '</tr></table>'
-
-                    '<div style="font-size:36px;font-weight:800;color:#1F2937;margin-bottom:12px;">'
-                    + dsize + '</div>'
-
-                    + _bar(dpct, h=24) +
-
-                    '<table width="100%" style="border-collapse:collapse;margin-top:8px;"><tr>'
-                    '<td style="font-size:16px;color:#6B7280;">'
-                    + str(du) + ' usados de ' + str(dt) + ' ('
-                    + '{:.0f}'.format(dpct) + '%)</td>'
-                    '<td style="text-align:right;font-size:24px;font-weight:800;color:'
-                    + bc + ';">' + '{:.0f}'.format(dpct) + '%</td>'
-                    '</tr></table>'
-
-                    + drec +
-                    '</div>'
                 )
 
             disk_ov  = max((_dpct(dh.get("disk_num","")) for dh in disk_health), default=0.0)
-            s5 = ""
+            s_storage = ""
             if disk_health:
-                s5 = (
+                s_storage = (
                     '<div style="background:#fff;border-radius:16px;'
-                    'box-shadow:0 2px 16px rgba(0,0,0,0.08);margin:16px;padding:24px;">'
+                    'box-shadow:0 2px 16px rgba(0,0,0,0.08);margin:16px;padding:18px 20px;">'
                     + _card_hdr("&#128190;", "ALMACENAMIENTO", disk_ov)
-                    + "".join(_disk_block(dh) for dh in disk_health[:3])
+                    + "".join(_disk_row(dh) for dh in disk_health[:3])
                     + '</div>'
                 )
 
             # ═══════════════════════════════════════════════════════════════════
-            # SECCION 6 — RECOMENDACIONES
+            # FILA 3 — RECOMENDACIONES (hasta 4 items, 2 columnas)
             # ═══════════════════════════════════════════════════════════════════
-            def _rec(level, text):
+            def _rec_compact(level, text):
                 if level == "red":
                     rb, rd, ri2 = "#FEE2E2", "#FCA5A5", "!"
                 elif level == "yellow":
@@ -1296,21 +1181,36 @@ class Api:
                     rb, rd, ri2 = "#D1FAE5", "#6EE7B7", "OK"
                 return (
                     '<div style="background:' + rb + ';border:1.5px solid ' + rd + ';'
-                    'border-radius:12px;padding:18px 20px;margin-bottom:12px;">'
-                    '<span style="font-size:20px;font-weight:900;vertical-align:middle;'
-                    'margin-right:10px;color:#1F2937;">[' + ri2 + ']</span>'
-                    '<span style="font-size:17px;color:#1F2937;vertical-align:middle;'
-                    'line-height:1.5;">' + text + '</span>'
+                    'border-radius:10px;padding:10px 12px;">'
+                    '<span style="font-size:13px;font-weight:900;vertical-align:top;'
+                    'margin-right:6px;color:#1F2937;">[' + ri2 + ']</span>'
+                    '<span style="font-size:12.5px;color:#1F2937;line-height:1.4;">' + text + '</span>'
                     '</div>'
                 )
 
-            s6 = (
+            recs_ltd  = recs[:4]
+            recs_rows = ""
+            for i in range(0, len(recs_ltd), 2):
+                pair = recs_ltd[i:i + 2]
+                if len(pair) == 2:
+                    recs_rows += (
+                        '<table width="100%" style="border-collapse:collapse;margin-bottom:8px;"><tr>'
+                        '<td width="50%" style="vertical-align:top;padding-right:6px;">'
+                        + _rec_compact(*pair[0]) + '</td>'
+                        '<td width="50%" style="vertical-align:top;padding-left:6px;">'
+                        + _rec_compact(*pair[1]) + '</td>'
+                        '</tr></table>'
+                    )
+                else:
+                    recs_rows += '<div style="margin-bottom:8px;">' + _rec_compact(*pair[0]) + '</div>'
+
+            s_recs = (
                 '<div style="background:#fff;border-radius:16px;'
-                'box-shadow:0 2px 16px rgba(0,0,0,0.08);margin:16px;padding:24px;">'
-                '<div style="font-size:16px;font-weight:700;color:#6B7280;letter-spacing:1px;'
-                'text-transform:uppercase;margin-bottom:16px;">RECOMENDACIONES</div>'
-                + "".join(_rec(lvl, txt) for lvl, txt in recs)
-                + '</div>'
+                'box-shadow:0 2px 16px rgba(0,0,0,0.08);margin:16px;padding:18px 20px;">'
+                '<div style="font-size:13px;font-weight:700;color:#6B7280;letter-spacing:1px;'
+                'text-transform:uppercase;margin-bottom:12px;">RECOMENDACIONES</div>'
+                + recs_rows +
+                '</div>'
             )
 
             # ═══════════════════════════════════════════════════════════════════
@@ -1354,7 +1254,7 @@ class Api:
                 '<meta charset="UTF-8">'
                 '<style>' + css + '</style>'
                 '</head><body>'
-                + s1 + s2 + s3 + s4 + s5 + s6 + footer
+                + s1 + s_metrics + s_storage + s_recs + footer
                 + '<div style="height:20px;"></div>'
                 '</body></html>'
             )
