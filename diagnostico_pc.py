@@ -2112,6 +2112,96 @@ class Api:
         except Exception as e:
             return json.dumps({"error": str(e)})
 
+    # ── Inicio de Windows ─────────────────────────────────────────────
+    def get_startup_programs(self):
+        try:
+            r = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                 "Get-CimInstance Win32_StartupCommand | "
+                 "Select-Object Name, Command, Location, User | "
+                 "ConvertTo-Json -Compress"],
+                capture_output=True, text=True, timeout=15, errors="replace", **_NWIN,
+            )
+
+            startup_list = []
+            if r.returncode == 0 and r.stdout.strip():
+                raw = json.loads(r.stdout.strip())
+                items = [raw] if isinstance(raw, dict) else raw
+                for item in items:
+                    startup_list.append({
+                        "name":     str(item.get("Name") or "Sin nombre"),
+                        "command":  str(item.get("Command") or ""),
+                        "location": str(item.get("Location") or ""),
+                        "user":     str(item.get("User") or ""),
+                        "enabled":  True,
+                    })
+
+            # Cruzar con StartupApproved (HKCU y HKLM) para saber cuáles
+            # están realmente deshabilitados. Win32_StartupCommand lista
+            # la entrada del registro igual, esté habilitada o no; el
+            # primer byte del valor binario es el que indica el estado
+            # real (0x03 = deshabilitado, 0x02 = habilitado).
+            try:
+                ps_flags = (
+                    "$(foreach ($root in 'HKCU:','HKLM:') {"
+                    "  $path = Join-Path $root 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run';"
+                    "  if (Test-Path $path) {"
+                    "    $k = Get-Item $path;"
+                    "    foreach ($n in $k.Property) {"
+                    "      $v = (Get-ItemProperty -Path $path -Name $n).$n;"
+                    "      if ($v) { [PSCustomObject]@{Name=$n; Disabled=($v[0] -eq 3)} }"
+                    "    }"
+                    "  }"
+                    "}) | ConvertTo-Json -Compress"
+                )
+                r2 = subprocess.run(
+                    ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_flags],
+                    capture_output=True, text=True, timeout=10, errors="replace", **_NWIN,
+                )
+                if r2.returncode == 0 and r2.stdout.strip():
+                    raw2 = json.loads(r2.stdout.strip())
+                    flags = [raw2] if isinstance(raw2, dict) else raw2
+                    disabled_names = {str(f.get("Name")) for f in flags if f.get("Disabled")}
+                    for entry in startup_list:
+                        if entry["name"] in disabled_names:
+                            entry["enabled"] = False
+            except Exception:
+                pass
+
+            return json.dumps(startup_list)
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
+    def toggle_startup_program(self, name, location, enable):
+        try:
+            # Escapado seguro para interpolar en un string PS entre comillas dobles
+            name_esc = str(name).replace("`", "``").replace('"', '`"')
+            hive = "HKLM:" if "HKLM" in str(location).upper() else "HKCU:"
+            base = hive + r"\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run"
+
+            if enable:
+                ps_cmd = (
+                    f'$path = "{base}"; '
+                    f'if (Test-Path $path) {{ Remove-ItemProperty -Path $path -Name "{name_esc}" -ErrorAction SilentlyContinue }}'
+                )
+            else:
+                ps_cmd = (
+                    f'$path = "{base}"; '
+                    f'if (-not (Test-Path $path)) {{ New-Item -Path $path -Force | Out-Null }}; '
+                    f'$bytes = [byte[]](0x03,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00); '
+                    f'Set-ItemProperty -Path $path -Name "{name_esc}" -Value $bytes -Type Binary'
+                )
+
+            r = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_cmd],
+                capture_output=True, text=True, timeout=10, errors="replace", **_NWIN,
+            )
+            if r.returncode == 0:
+                return json.dumps({"status": "ok"})
+            return json.dumps({"error": (r.stderr or "").strip() or "Error al cambiar el estado"})
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
     # ── Limpiar Sistema ──────────────────────────────────────────────
     def analyze_cleanup(self):
         try:
@@ -2896,6 +2986,13 @@ html[data-theme="light"] .bl-vol-card { background:#F9FAFB; border:1px solid #E5
 .bl-action-btn.on  { background:var(--brand); color:#fff; }
 .bl-action-btn.off { background:rgba(239,68,68,0.10); color:#B91C1C; border:1px solid rgba(239,68,68,0.25); }
 .bl-action-btn:disabled { opacity:.45; cursor:not-allowed; }
+/* ── Desinstalador: pestañas + Inicio de Windows ──────────────── */
+.desc-tab { background:transparent; color:var(--text-muted-on-card); border:1px solid var(--border-card); border-radius:8px; padding:6px 16px; font-family:var(--font-ui); font-size:12.5px; font-weight:600; cursor:pointer; transition:background .15s,color .15s,border-color .15s; }
+.desc-tab.active { background:#1A56C4; color:#fff; border-color:#1A56C4; }
+.desc-toggle-btn { border:none; border-radius:99px; padding:6px 16px; font-size:12px; font-weight:700; cursor:pointer; font-family:var(--font-ui); color:#fff; flex-shrink:0; white-space:nowrap; transition:opacity .15s; }
+.desc-toggle-btn:hover { opacity:.88; }
+.desc-toggle-on  { background:#1A56C4; }
+.desc-toggle-off { background:#9CA3AF; }
 /* ── Taller de Software ─────────────────────────────────────────── */
 .sw-section { padding: 2px 20px 8px; flex-shrink: 0; }
 .sw-cards-row { display: flex; gap: 12px; flex-wrap: wrap; }
@@ -3407,6 +3504,11 @@ html[data-theme="light"] .net-sum-stat { background:rgba(255,255,255,.6); }
     <div style="font-size:16px;font-weight:700;margin-bottom:4px;color:var(--txt)">&#x1F5D1;&#xFE0F; Desinstalador de Programas</div>
     <div style="font-size:12px;color:var(--txt2);margin-bottom:16px">Selecion&#xE1; un programa para desinstalarlo</div>
 
+    <div style="display:flex;gap:8px;margin-bottom:16px">
+      <button id="descTabInstalados" class="desc-tab active" onclick="cambiarPestanaDesinstalador('instalados')">&#x1F4E6; Programas instalados</button>
+      <button id="descTabInicio" class="desc-tab" onclick="cambiarPestanaDesinstalador('inicio')">&#x1F680; Inicio de Windows</button>
+    </div>
+
     <!-- Estado 1: Lista -->
     <div id="desinstaListSection">
       <div id="desinstaLoadingEl" style="text-align:center;padding:32px 0">
@@ -3414,6 +3516,15 @@ html[data-theme="light"] .net-sum-stat { background:rgba(255,255,255,.6); }
         <div style="font-size:14px;color:var(--txt2)">Cargando programas instalados&hellip;</div>
       </div>
       <div id="desinstaProgList" style="display:none;max-height:360px;overflow-y:auto;padding-right:4px"></div>
+    </div>
+
+    <!-- Pestaña: Inicio de Windows -->
+    <div id="desinstaStartupSection" style="display:none">
+      <div id="desinstaStartupLoadingEl" style="text-align:center;padding:32px 0">
+        <div style="width:40px;height:40px;border:3px solid var(--bar-track);border-top-color:var(--brand);border-radius:50%;animation:spin .8s linear infinite;margin:0 auto 14px"></div>
+        <div style="font-size:14px;color:var(--txt2)">Cargando programas de inicio&hellip;</div>
+      </div>
+      <div id="desinstaStartupList" style="display:none;max-height:360px;overflow-y:auto;padding-right:4px"></div>
     </div>
 
     <!-- Estado 2: Confirmación -->
@@ -4806,6 +4917,8 @@ function buscarProducto(fabricante, modelo, esNotebook) {
 // ── Desinstalador de Programas modal ─────────────────────────────────────
 var _desinstaPrograms = [];
 var _desinstaSelected = null;
+var _desinstaStartupPrograms = [];
+var _desinstaStartupLoaded = false;
 
 function _escHtml(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
@@ -4814,6 +4927,11 @@ function _escHtml(s) {
 function abrirModalDesinstalador() {
   _desinstaSelected = null;
   _desinstaPrograms = [];
+  _desinstaStartupPrograms = [];
+  _desinstaStartupLoaded = false;
+  document.getElementById('descTabInstalados').classList.add('active');
+  document.getElementById('descTabInicio').classList.remove('active');
+  document.getElementById('desinstaStartupSection').style.display = 'none';
   document.getElementById('desinstaListSection').style.display     = '';
   document.getElementById('desinstaConfirmSection').style.display  = 'none';
   document.getElementById('desinstaProgressSection').style.display = 'none';
@@ -4907,6 +5025,83 @@ function cerrarModalDesinstalador() {
 
 function cerrarDesinstaOv(e) {
   if (e.target === document.getElementById('desinstaModal')) cerrarModalDesinstalador();
+}
+
+function cambiarPestanaDesinstalador(tab) {
+  var tabInstalados  = document.getElementById('descTabInstalados');
+  var tabInicio       = document.getElementById('descTabInicio');
+  var paneInstalados = document.getElementById('desinstaListSection');
+  var paneInicio       = document.getElementById('desinstaStartupSection');
+  if (tab === 'inicio') {
+    tabInicio.classList.add('active');
+    tabInstalados.classList.remove('active');
+    paneInicio.style.display       = '';
+    paneInstalados.style.display  = 'none';
+    if (!_desinstaStartupLoaded) cargarProgramasInicio();
+  } else {
+    tabInstalados.classList.add('active');
+    tabInicio.classList.remove('active');
+    paneInstalados.style.display  = '';
+    paneInicio.style.display       = 'none';
+  }
+}
+
+function cargarProgramasInicio() {
+  document.getElementById('desinstaStartupLoadingEl').style.display = '';
+  document.getElementById('desinstaStartupLoadingEl').innerHTML =
+    '<div style="width:40px;height:40px;border:3px solid var(--bar-track);border-top-color:var(--brand);border-radius:50%;animation:spin .8s linear infinite;margin:0 auto 14px"></div>'
+    + '<div style="font-size:14px;color:var(--txt2)">Cargando programas de inicio…</div>';
+  document.getElementById('desinstaStartupList').style.display = 'none';
+  document.getElementById('desinstaStartupList').innerHTML     = '';
+  if (!window.pywebview || !window.pywebview.api) return;
+  window.pywebview.api.get_startup_programs().then(function(raw) {
+    var data = JSON.parse(raw);
+    if (data.error) {
+      document.getElementById('desinstaStartupLoadingEl').innerHTML =
+        '<div style="font-size:13px;color:#B91C1C;padding:16px">&#x26A0;&#xFE0F; Error: ' + _escHtml(data.error) + '</div>';
+      return;
+    }
+    _desinstaStartupPrograms = data;
+    _desinstaStartupLoaded   = true;
+    renderizarListaInicio(data);
+    document.getElementById('desinstaStartupLoadingEl').style.display = 'none';
+    document.getElementById('desinstaStartupList').style.display      = '';
+  }).catch(function() {
+    document.getElementById('desinstaStartupLoadingEl').innerHTML =
+      '<div style="font-size:13px;color:#B91C1C;padding:16px">&#x26A0;&#xFE0F; No se pudo cargar la lista de programas de inicio.</div>';
+  });
+}
+
+function renderizarListaInicio(programas) {
+  var el = document.getElementById('desinstaStartupList');
+  if (!programas.length) {
+    el.innerHTML = '<div style="text-align:center;padding:20px;color:var(--txt2)">No se encontraron programas de inicio.</div>';
+    return;
+  }
+  el.innerHTML = programas.map(function(p, i) {
+    var estadoTxt  = p.enabled ? 'Habilitado' : 'Deshabilitado';
+    var toggleCls  = p.enabled ? 'desc-toggle-on' : 'desc-toggle-off';
+    return '<div style="background:var(--card-bg);border:1px solid var(--card-bd);border-radius:10px;padding:10px 14px;margin-bottom:6px;display:flex;align-items:center;gap:12px">'
+      + '<div style="width:28px;height:28px;border-radius:4px;background:rgba(26,86,196,0.10);display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0;">&#x1F680;</div>'
+      + '<div style="flex:1;min-width:0">'
+      + '<div style="font-size:14px;font-weight:600;color:var(--txt);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + _escHtml(p.name) + '</div>'
+      + '</div>'
+      + '<button class="desc-toggle-btn ' + toggleCls + '" onclick="toggleInicioWindows(' + i + ')">' + estadoTxt + '</button>'
+      + '</div>';
+  }).join('');
+}
+
+function toggleInicioWindows(idx) {
+  var item = _desinstaStartupPrograms[idx];
+  if (!item) return;
+  var nuevoEstado = !item.enabled;
+  window.pywebview.api.toggle_startup_program(item.name, item.location, nuevoEstado).then(function(raw) {
+    var d = JSON.parse(raw);
+    if (!d.error) {
+      item.enabled = nuevoEstado;
+      renderizarListaInicio(_desinstaStartupPrograms);
+    }
+  }).catch(function() {});
 }
 
 // ── Limpiar Sistema modal ────────────────────────────────────────────────
