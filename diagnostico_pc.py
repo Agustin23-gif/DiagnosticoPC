@@ -2113,6 +2113,25 @@ class Api:
             return json.dumps({"error": str(e)})
 
     # ── Inicio de Windows ─────────────────────────────────────────────
+    @staticmethod
+    def _clean_exe_path(command):
+        """Extrae la ruta del ejecutable de un Command de Win32_StartupCommand
+        (puede venir con comillas, argumentos extra y variables de entorno sin
+        expandir, ej. '%windir%\\system32\\...' o '"C:\\...\\app.exe" --flag')."""
+        try:
+            cmd = (command or "").strip()
+            if not cmd:
+                return ""
+            if cmd.startswith('"'):
+                parts = cmd.split('"')
+                exe = parts[1] if len(parts) > 1 else cmd.strip('"')
+            else:
+                exe = cmd.split()[0] if cmd.split() else cmd
+            exe = os.path.expandvars(exe.strip('"'))
+            return exe if os.path.exists(exe) else ""
+        except Exception:
+            return ""
+
     def get_startup_programs(self):
         try:
             r = subprocess.run(
@@ -2135,6 +2154,20 @@ class Api:
                         "user":     str(item.get("User") or ""),
                         "enabled":  True,
                     })
+
+            # Íconos reales de cada ejecutable — mismo patrón que
+            # get_installed_programs: una sola llamada PowerShell en lote
+            # via _extract_icons_batch en vez de un proceso por ícono.
+            icon_pairs = []
+            for i, entry in enumerate(startup_list):
+                exe_path = Api._clean_exe_path(entry["command"])
+                entry["_icon_path"] = exe_path
+                if exe_path:
+                    icon_pairs.append((str(i), exe_path))
+            icons = Api._extract_icons_batch(icon_pairs)
+            for i, entry in enumerate(startup_list):
+                entry["icon"] = icons.get(str(i), "")
+                del entry["_icon_path"]
 
             # Cruzar con StartupApproved (HKCU y HKLM) para saber cuáles
             # están realmente deshabilitados. Win32_StartupCommand lista
@@ -5081,8 +5114,11 @@ function renderizarListaInicio(programas) {
   el.innerHTML = programas.map(function(p, i) {
     var estadoTxt  = p.enabled ? 'Habilitado' : 'Deshabilitado';
     var toggleCls  = p.enabled ? 'desc-toggle-on' : 'desc-toggle-off';
+    var iconHtml = p.icon
+      ? '<img src="data:image/png;base64,' + p.icon + '" style="width:28px;height:28px;border-radius:4px;object-fit:contain;flex-shrink:0;">'
+      : '<div style="width:28px;height:28px;border-radius:4px;background:rgba(26,86,196,0.10);display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0;">&#x1F680;</div>';
     return '<div style="background:var(--card-bg);border:1px solid var(--card-bd);border-radius:10px;padding:10px 14px;margin-bottom:6px;display:flex;align-items:center;gap:12px">'
-      + '<div style="width:28px;height:28px;border-radius:4px;background:rgba(26,86,196,0.10);display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0;">&#x1F680;</div>'
+      + iconHtml
       + '<div style="flex:1;min-width:0">'
       + '<div style="font-size:14px;font-weight:600;color:var(--txt);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + _escHtml(p.name) + '</div>'
       + '</div>'
