@@ -5241,6 +5241,25 @@ function copiarClaveRecuperacion() {
 
 window.addEventListener('resize', () => { _drawCPUFrame(_cpuDisp); drawRAM(_lastRamPct); });
 </script>
+<div style="
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    width: 100%;
+    text-align: center;
+    padding: 6px 0;
+    font-family: 'Plus Jakarta Sans', sans-serif;
+    font-size: 11px;
+    font-weight: 500;
+    color: rgba(255, 255, 255, 0.55);
+    background: rgba(13, 43, 107, 0.30);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    border-top: 1px solid rgba(255, 255, 255, 0.10);
+    z-index: 400;
+    letter-spacing: 0.03em;">
+    Desarrollado por Agust&iacute;n Lezcano
+</div>
 </body>
 </html>
 """
