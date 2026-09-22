@@ -5121,9 +5121,9 @@ function renderBitlockerVols(vols) {
     var pctTxt = (v.EncryptionPercentage !== undefined && v.EncryptionPercentage !== null) ? v.EncryptionPercentage + '% cifrado' : '';
     var btnHtml;
     if (b.action === 'on') {
-      btnHtml = '<button class="bl-action-btn on" onclick="mostrarActivarBitLocker(\'' + mp + '\')">Activar BitLocker</button>';
+      btnHtml = `<button class="bl-action-btn on" onclick="mostrarActivarBitLocker('${mp}')">Activar BitLocker</button>`;
     } else if (b.action === 'off') {
-      btnHtml = '<button class="bl-action-btn off" onclick="mostrarDesactivarBitLocker(\'' + mp + '\')">Desactivar</button>';
+      btnHtml = `<button class="bl-action-btn off" onclick="mostrarDesactivarBitLocker('${mp}')">Desactivar</button>`;
     } else {
       btnHtml = '<button class="bl-action-btn on" disabled>En proceso...</button>';
     }
