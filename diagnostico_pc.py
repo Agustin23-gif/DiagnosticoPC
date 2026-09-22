@@ -2356,11 +2356,36 @@ class Api:
                  "ConvertTo-Json -Compress"],
                 capture_output=True, text=True, timeout=15, **_NWIN,
             )
-            if r.returncode == 0 and r.stdout.strip():
-                raw = json.loads(r.stdout.strip())
-                volumes = [raw] if isinstance(raw, dict) else raw
-                return json.dumps(volumes)
-            return json.dumps([])
+            if r.returncode != 0 or not r.stdout.strip():
+                return json.dumps([])
+            raw = json.loads(r.stdout.strip())
+            volumes = [raw] if isinstance(raw, dict) else raw
+
+            labels = {}
+            try:
+                rv = subprocess.run(
+                    ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                     "Get-Volume | Select-Object DriveLetter,FileSystemLabel | "
+                     "ConvertTo-Json -Compress"],
+                    capture_output=True, text=True, timeout=15, **_NWIN,
+                )
+                if rv.returncode == 0 and rv.stdout.strip():
+                    raw_v = json.loads(rv.stdout.strip())
+                    vols_v = [raw_v] if isinstance(raw_v, dict) else raw_v
+                    for v in vols_v:
+                        letter = str(v.get("DriveLetter") or "").strip().upper()
+                        if letter:
+                            labels[letter] = str(v.get("FileSystemLabel") or "").strip()
+            except Exception:
+                pass
+
+            for vol in volumes:
+                mp = str(vol.get("MountPoint") or "").strip().upper()
+                letter = mp.rstrip("\\").rstrip(":")
+                label = labels.get(letter, "")
+                vol["VolumeLabel"] = label if label else "Sin etiqueta"
+
+            return json.dumps(volumes)
         except Exception as e:
             return json.dumps({"error": str(e)})
 
@@ -2961,7 +2986,7 @@ html[data-theme="light"] .bl-vol-card { background:#F9FAFB; border:1px solid #E5
 .bl-vol-pct  { font-size:11px; font-weight:300; color:var(--txt2); margin-top:2px; }
 .bl-badge { font-size:11px; font-weight:600; padding:3px 10px; border-radius:999px; white-space:nowrap; flex-shrink:0; }
 .bl-badge-on   { background:rgba(34,197,94,.12);   color:#15803D; }
-.bl-badge-off  { background:rgba(122,141,168,.14); color:var(--txt2); }
+.bl-badge-off  { background:rgba(107,114,128,.12); color:#6B7280; }
 .bl-badge-busy { background:rgba(245,158,11,.15);  color:#B45309; }
 .bl-badge-bad  { background:rgba(239,68,68,.12);   color:#B91C1C; }
 .bl-input { width:100%; background:var(--inp-bg); border:1px solid var(--inp-bd); border-radius:var(--radius-sm); color:var(--txt); font-family:var(--font-ui); font-size:13px; padding:8px 11px; outline:none; margin-top:8px; }
@@ -5103,7 +5128,7 @@ function _blBadge(v) {
   }
   if (status === 'FullyEncrypted') {
     if (prot === 1) return {cls:'bl-badge-on', txt:'&#x1F512; Cifrado', action:'off'};
-    return {cls:'bl-badge-bad', txt:'&#x274C; Protecci\xF3n suspendida', action:'off'};
+    return {cls:'bl-badge-bad', txt:'&#x26A0;&#xFE0F; Suspendido', action:'off'};
   }
   return {cls:'bl-badge-off', txt:'&#x1F513; Sin cifrar', action:'on'};
 }
@@ -5130,7 +5155,7 @@ function renderBitlockerVols(vols) {
     return '<div class="bl-vol-card">'
       + '<div class="bl-vol-hdr">'
       + '<div class="bl-vol-letter">' + mp + '</div>'
-      + '<div class="bl-vol-info"><div class="bl-vol-name">' + _escHtml(v.VolumeType || 'Unidad') + '</div>'
+      + '<div class="bl-vol-info"><div class="bl-vol-name">' + _escHtml(v.VolumeLabel || 'Sin etiqueta') + '</div>'
       + (pctTxt ? '<div class="bl-vol-pct">' + pctTxt + '</div>' : '') + '</div>'
       + '<span class="bl-badge ' + b.cls + '">' + b.txt + '</span>'
       + '</div>'
