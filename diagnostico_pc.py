@@ -3178,12 +3178,15 @@ html[data-theme="light"] .net-sum-stat { background:rgba(255,255,255,.6); }
     <canvas id="ramCanvas"></canvas>
     <div class="card-sub" id="ramInfo" style="margin-top:6px;font-size:11.5px;opacity:.8">—</div>
   </div>
+  <div style="display:flex;flex-direction:column;gap:12px">
   <div class="card">
     <div class="card-hdr"><span class="card-icon" id="iconHDD"></span><span class="card-lbl">Almacenamiento</span><span class="status-pill ok">&#x25CF; SALUDABLE</span></div>
     <div id="diskHealth"><div class="disk-loading">Consultando estado de discos&hellip;</div></div>
     <div id="diskList" class="disk-partitions" style="display:none"></div>
-    <div class="section-label in-card">HERRAMIENTAS R&Aacute;PIDAS</div>
-    <div class="tool-btns-row">
+  </div>
+  <div class="card">
+    <div class="card-hdr"><span class="card-lbl">Herramientas R&aacute;pidas</span></div>
+    <div class="tool-btns-row" style="margin-top:0">
       <button class="btn-tool-card" onclick="openChkdskModal()">
         <span class="tool-icon">&#x1F527;</span>
         <span>Reparar Unidad</span>
@@ -3205,6 +3208,7 @@ html[data-theme="light"] .net-sum-stat { background:rgba(255,255,255,.6); }
         <span>BitLocker</span>
       </button>
     </div>
+  </div>
   </div>
 </div>
 
