@@ -2476,6 +2476,83 @@ class Api:
         except Exception as e:
             return json.dumps({"error": str(e)})
 
+    # ── Gestor de Impresoras ───────────────────────────────────────────
+    # PrinterStatus de MSFT_Printer: 0 Normal, 1 Paused, 2 Error,
+    # 3 PendingDeletion, 4 PaperJam, 5 PaperOut, 8 Offline, 9 IOActive,
+    # 10 Busy, 11 Printing, 13 NotAvailable, 14 Waiting, 15 Processing,
+    # 16 Initializing, 17 WarmingUp, 24 ServerUnknown, 25 PowerSave, ...
+    _PRN_OK      = {0, 9, 10, 11, 14, 15, 16, 17, 25}
+    _PRN_OFFLINE = {1, 8, 13, 24}
+
+    @staticmethod
+    def _ps_literal(s):
+        """String PowerShell entre comillas simples (sin expansión de $ ni `)."""
+        return "'" + str(s).replace("'", "''") + "'"
+
+    def get_printers(self):
+        try:
+            r = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                 "Get-Printer | Select-Object Name,PrinterStatus,JobCount | "
+                 "ConvertTo-Json -Compress"],
+                capture_output=True, text=True, timeout=15, errors="replace", **_NWIN,
+            )
+            if r.returncode == 0 and r.stdout.strip():
+                raw = json.loads(r.stdout.strip())
+                printers = [raw] if isinstance(raw, dict) else raw
+                result = []
+                for p in printers:
+                    try:
+                        status = int(p.get("PrinterStatus") or 0)
+                    except (TypeError, ValueError):
+                        status = -1
+                    if status in Api._PRN_OK:
+                        estado = "lista"
+                    elif status in Api._PRN_OFFLINE:
+                        estado = "offline"
+                    else:
+                        estado = "error"
+                    result.append({
+                        "name":   str(p.get("Name") or "Sin nombre"),
+                        "status": estado,
+                        "jobs":   int(p.get("JobCount") or 0),
+                    })
+                return json.dumps(result)
+            return json.dumps([])
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
+    def clear_print_queue(self, printer_name):
+        try:
+            name = Api._ps_literal(printer_name)
+            r = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                 f"Get-PrintJob -PrinterName {name} -ErrorAction Stop | "
+                 f"Remove-PrintJob -ErrorAction Stop"],
+                capture_output=True, text=True, timeout=15, errors="replace", **_NWIN,
+            )
+            if r.returncode == 0:
+                return json.dumps({"status": "ok"})
+            err = (r.stderr.strip().splitlines() or [""])[0].strip()
+            return json.dumps({"error": err or "No se pudo limpiar la cola"})
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
+    def remove_printer(self, printer_name):
+        try:
+            name = Api._ps_literal(printer_name)
+            r = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                 f"Remove-Printer -Name {name} -ErrorAction Stop"],
+                capture_output=True, text=True, timeout=15, errors="replace", **_NWIN,
+            )
+            if r.returncode == 0:
+                return json.dumps({"status": "ok"})
+            err = (r.stderr.strip().splitlines() or [""])[0].strip()
+            return json.dumps({"error": err or "No se pudo eliminar la impresora"})
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
 
 # ── HTML UI ───────────────────────────────────────────────────────────────
 HTML = """<!DOCTYPE html>
@@ -2971,10 +3048,10 @@ html[data-theme="dark"] .btn-tool-inline:hover { background:rgba(0,57,166,.15); 
 .chk-prog-fill.ok   { width:100% !important; background:var(--green); }
 .chk-prog-fill.warn { width:100% !important; background:var(--amber); }
 /* ── Tool cards ── */
-.btn-win-icon { width:24px; height:24px; object-fit:contain; }
-.tool-btns-row { display:flex; gap:8px; margin-top:12px; }
-.btn-tool-card { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:7px; padding:14px 6px 12px; border-radius:var(--radius-card); border:1px solid var(--border-card); background:var(--surface-card); box-shadow:var(--card-sh); color:var(--text-on-card); font-family:var(--font-ui); font-size:11.5px; font-weight:600; cursor:pointer; text-align:center; line-height:1.3; transition:background var(--transition), border-color var(--transition), transform .15s; }
-.btn-tool-card .tool-icon { font-size:24px; line-height:1; }
+.btn-win-icon { width:28px; height:28px; object-fit:contain; }
+.tool-btns-row { display:flex; gap:6px; margin-top:12px; }
+.btn-tool-card { flex:1; min-width:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:5px; padding:8px 6px; border-radius:var(--radius-card); border:1px solid var(--border-card); background:var(--surface-card); box-shadow:var(--card-sh); color:var(--text-on-card); font-family:var(--font-ui); font-size:11px; font-weight:600; cursor:pointer; text-align:center; line-height:1.3; transition:background var(--transition), border-color var(--transition), transform .15s; }
+.btn-tool-card .tool-icon { font-size:28px; width:28px; height:28px; line-height:28px; }
 .btn-tool-card:hover { background:var(--surface-card-hover); border-color:var(--border-card-hover); transform:translateY(-2px); }
 .btn-tool-card:active { transform:scale(.96); }
 html[data-theme="dark"] .btn-tool-card { background:var(--card-bg); border-color:var(--card-bd); color:var(--txt); box-shadow:0 2px 10px rgba(0,0,0,.35); }
@@ -3206,6 +3283,10 @@ html[data-theme="light"] .net-sum-stat { background:rgba(255,255,255,.6); }
       <button class="btn-tool-card" onclick="abrirModalBitLocker()">
         <span class="tool-icon">&#x1F512;</span>
         <span>BitLocker</span>
+      </button>
+      <button class="btn-tool-card" onclick="abrirModalImpresoras()">
+        <span class="tool-icon">&#x1F5A8;&#xFE0F;</span>
+        <span>Impresoras</span>
       </button>
     </div>
   </div>
@@ -3681,6 +3762,53 @@ html[data-theme="light"] .net-sum-stat { background:rgba(255,255,255,.6); }
           <button class="btn-tool-inline" style="margin-top:10px" onclick="copiarClaveRecuperacion()">&#x1F4CB; Copiar clave</button>
         </div>
         <button class="btn btn-p" style="padding:10px 32px;font-size:14px" onclick="cerrarModalBitLocker()">Cerrar</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="printersModal" class="modal-ov" style="z-index:1000" onclick="cerrarModalImpresorasOv(event)">
+  <div class="chk-modal-card" style="max-width:500px;pointer-events:auto;z-index:1001">
+    <button class="modal-x" onclick="cerrarModalImpresoras()">&#x2715;</button>
+    <div style="font-size:16px;font-weight:700;margin-bottom:4px;color:var(--txt)">&#x1F5A8;&#xFE0F; Gestor de Impresoras</div>
+    <div style="font-size:12px;color:var(--txt2);margin-bottom:16px">Administr&aacute; las impresoras del sistema</div>
+
+    <!-- Estado 1: Lista de impresoras -->
+    <div id="prnListSection">
+      <div id="prnLoadingEl" style="text-align:center;padding:32px 0">
+        <div style="width:40px;height:40px;border:3px solid var(--bar-track);border-top-color:var(--brand);border-radius:50%;animation:spin .8s linear infinite;margin:0 auto 14px"></div>
+        <div style="font-size:14px;color:var(--txt2)">Detectando impresoras&hellip;</div>
+      </div>
+      <div id="prnList" style="display:none;max-height:380px;overflow-y:auto;padding-right:4px"></div>
+    </div>
+
+    <!-- Estado 2: Confirmar eliminación -->
+    <div id="prnConfirmSection" style="display:none">
+      <div style="font-size:15px;font-weight:700;color:var(--txt);margin-bottom:8px;word-break:break-word" id="prnConfirmMsg"></div>
+      <div style="font-size:12px;color:var(--txt2);margin-bottom:20px">La impresora se quitar&aacute; del sistema. Pod&eacute;s volver a instalarla despu&eacute;s.</div>
+      <div style="display:flex;gap:10px;justify-content:flex-end">
+        <button class="btn-chk-confirm-no" onclick="volverAListaImpresoras()">Cancelar</button>
+        <button class="btn-chk-confirm-yes" onclick="confirmarEliminarImpresora(_prnSelected)">Eliminar</button>
+      </div>
+    </div>
+
+    <!-- Estado 3: Progreso -->
+    <div id="prnProgressSection" style="display:none">
+      <div style="text-align:center;padding:32px 0">
+        <div style="width:40px;height:40px;border:3px solid var(--bar-track);border-top-color:var(--brand);border-radius:50%;animation:spin .8s linear infinite;margin:0 auto 14px"></div>
+        <div style="font-size:14px;font-weight:600;color:var(--txt)" id="prnProgressMsg">&hellip;</div>
+      </div>
+    </div>
+
+    <!-- Estado 4: Resultado -->
+    <div id="prnResultSection" style="display:none">
+      <div style="text-align:center;padding:20px 0 8px">
+        <div style="font-size:48px;line-height:1;margin-bottom:12px" id="prnResultIcon">&#x2705;</div>
+        <div style="font-size:15px;font-weight:700;color:var(--txt);margin-bottom:20px;word-break:break-word" id="prnResultMsg"></div>
+        <div style="display:flex;gap:10px;justify-content:center">
+          <button class="btn-chk-confirm-no" style="padding:10px 20px" onclick="cargarImpresoras()">Volver a la lista</button>
+          <button class="btn btn-p" style="padding:10px 32px;font-size:14px" onclick="cerrarModalImpresoras()">Cerrar</button>
+        </div>
       </div>
     </div>
   </div>
@@ -5472,6 +5600,133 @@ function ejecutarDesactivarBitLocker(unidad) {
 function copiarClaveRecuperacion() {
   var txt = document.getElementById('blRecoveryKeyBox').textContent;
   try { navigator.clipboard.writeText(txt); } catch (e) {}
+}
+
+// ── Gestor de Impresoras modal ─────────────────────────────────────────────
+var _prnList = [];
+var _prnSelected = null;
+
+function _prnMostrar(seccion) {
+  ['prnListSection','prnConfirmSection','prnProgressSection','prnResultSection'].forEach(function(id) {
+    document.getElementById(id).style.display = (id === seccion) ? 'block' : 'none';
+  });
+}
+
+function _prnBadge(status) {
+  if (status === 'lista') return '<span class="bl-badge bl-badge-on">&#x2705; Lista</span>';
+  if (status === 'error') return '<span class="bl-badge bl-badge-bad">&#x26A0;&#xFE0F; Error</span>';
+  return '<span class="bl-badge bl-badge-off">&#x23F8;&#xFE0F; Sin conexi&oacute;n</span>';
+}
+
+function renderizarImpresoras(lista) {
+  _prnList = lista;
+  var el = document.getElementById('prnList');
+  if (!lista.length) {
+    el.innerHTML = '<div style="text-align:center;padding:20px;color:var(--txt2)">No se detectaron impresoras instaladas</div>';
+    return;
+  }
+  el.innerHTML = lista.map(function(p, i) {
+    var jobs = parseInt(p.jobs, 10) || 0;
+    var jobsTxt = jobs === 1 ? '1 trabajo en cola' : jobs + ' trabajos en cola';
+    return '<div class="bl-vol-card">'
+      + '<div class="bl-vol-hdr" style="margin-bottom:10px">'
+      + '<div style="font-size:24px;line-height:1;flex-shrink:0">&#x1F5A8;&#xFE0F;</div>'
+      + '<div class="bl-vol-info">'
+      + '<div class="bl-vol-name" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + _escHtml(p.name) + '</div>'
+      + '<div class="bl-vol-pct">' + jobsTxt + '</div>'
+      + '</div>'
+      + _prnBadge(p.status)
+      + '</div>'
+      + '<div style="display:flex;gap:8px">'
+      + '<button class="bl-action-btn off" onclick="eliminarImpresora(_prnList[' + i + '].name)">&#x1F5D1;&#xFE0F; Eliminar</button>'
+      + '<button class="bl-action-btn on" onclick="limpiarColaImpresora(_prnList[' + i + '].name)">&#x1F9F9; Limpiar cola</button>'
+      + '</div>'
+      + '</div>';
+  }).join('');
+}
+
+function cargarImpresoras() {
+  _prnSelected = null;
+  _prnMostrar('prnListSection');
+  document.getElementById('prnLoadingEl').style.display = 'block';
+  document.getElementById('prnLoadingEl').innerHTML =
+    '<div style="width:40px;height:40px;border:3px solid var(--bar-track);border-top-color:var(--brand);border-radius:50%;animation:spin .8s linear infinite;margin:0 auto 14px"></div>'
+    + '<div style="font-size:14px;color:var(--txt2)">Detectando impresoras&hellip;</div>';
+  document.getElementById('prnList').style.display = 'none';
+  document.getElementById('prnList').innerHTML = '';
+  if (!window.pywebview || !window.pywebview.api) return;
+  window.pywebview.api.get_printers().then(function(raw) {
+    var data = JSON.parse(raw);
+    if (data.error) {
+      document.getElementById('prnLoadingEl').innerHTML =
+        '<div style="font-size:13px;color:#B91C1C;padding:16px">&#x26A0;&#xFE0F; Error: ' + _escHtml(data.error) + '</div>';
+      return;
+    }
+    renderizarImpresoras(Array.isArray(data) ? data : []);
+    document.getElementById('prnLoadingEl').style.display = 'none';
+    document.getElementById('prnList').style.display = 'block';
+  }).catch(function() {
+    document.getElementById('prnLoadingEl').innerHTML =
+      '<div style="font-size:13px;color:#B91C1C;padding:16px">&#x26A0;&#xFE0F; No se pudo obtener la lista de impresoras.</div>';
+  });
+}
+
+function abrirModalImpresoras() {
+  document.getElementById('printersModal').classList.add('open');
+  cargarImpresoras();
+}
+
+function cerrarModalImpresoras() {
+  document.getElementById('printersModal').classList.remove('open');
+  _prnSelected = null;
+}
+
+function cerrarModalImpresorasOv(e) {
+  if (e.target === document.getElementById('printersModal')) cerrarModalImpresoras();
+}
+
+function volverAListaImpresoras() {
+  _prnSelected = null;
+  _prnMostrar('prnListSection');
+}
+
+function _prnResultado(ok, msg) {
+  _prnMostrar('prnResultSection');
+  document.getElementById('prnResultIcon').innerHTML = ok ? '&#x2705;' : '&#x274C;';
+  document.getElementById('prnResultMsg').textContent = msg;
+}
+
+function eliminarImpresora(nombre) {
+  _prnSelected = nombre;
+  document.getElementById('prnConfirmMsg').textContent = '¿Eliminar ' + nombre + '?';
+  _prnMostrar('prnConfirmSection');
+}
+
+function confirmarEliminarImpresora(nombre) {
+  if (!nombre) return;
+  _prnMostrar('prnProgressSection');
+  document.getElementById('prnProgressMsg').textContent = 'Eliminando ' + nombre + '...';
+  window.pywebview.api.remove_printer(nombre).then(function(raw) {
+    var d = JSON.parse(raw);
+    if (d.error) _prnResultado(false, 'Error: ' + d.error);
+    else _prnResultado(true, 'Impresora eliminada correctamente');
+  }).catch(function(err) {
+    _prnResultado(false, 'Error inesperado: ' + err);
+  });
+}
+
+function limpiarColaImpresora(nombre) {
+  if (!nombre) return;
+  _prnSelected = nombre;
+  _prnMostrar('prnProgressSection');
+  document.getElementById('prnProgressMsg').textContent = 'Limpiando cola de ' + nombre + '...';
+  window.pywebview.api.clear_print_queue(nombre).then(function(raw) {
+    var d = JSON.parse(raw);
+    if (d.error) _prnResultado(false, 'Error: ' + d.error);
+    else _prnResultado(true, 'Cola de impresión limpiada');
+  }).catch(function(err) {
+    _prnResultado(false, 'Error inesperado: ' + err);
+  });
 }
 
 window.addEventListener('resize', () => { _drawCPUFrame(_cpuDisp); drawRAM(_lastRamPct); });
