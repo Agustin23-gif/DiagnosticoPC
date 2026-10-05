@@ -2553,6 +2553,53 @@ class Api:
         except Exception as e:
             return json.dumps({"error": str(e)})
 
+    # ── Test de Estrés ─────────────────────────────────────────────────
+    # Herramientas en tools\stress\ junto al .exe (misma base que tools\office\).
+    # FurMark es portable: su carpeta FurMark_win64\ trae las dependencias.
+    _STRESS_TOOLS = {
+        "heavyload": ("HeavyLoad-x64-Setup (1).exe",),
+        "occt":      ("OCCT.exe",),
+        "furmark":   ("FurMark_win64", "FurMark_GUI.exe"),
+    }
+
+    def check_stress_tools(self):
+        try:
+            stress_path = os.path.join(self._office_base_path(), "tools", "stress")
+            tools = {
+                tool: os.path.exists(os.path.join(stress_path, *parts))
+                for tool, parts in Api._STRESS_TOOLS.items()
+            }
+            return json.dumps(tools)
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
+    def launch_stress_tool(self, tool):
+        try:
+            if tool not in Api._STRESS_TOOLS:
+                return json.dumps({"error": "Herramienta no reconocida"})
+            stress_path = os.path.join(self._office_base_path(), "tools", "stress")
+            exe_path = os.path.join(stress_path, *Api._STRESS_TOOLS[tool])
+            if not os.path.exists(exe_path):
+                return json.dumps({"error": f"No se encontró {os.path.join(*Api._STRESS_TOOLS[tool])}"})
+            # Directorio de trabajo = carpeta del ejecutable (FurMark_win64\ para
+            # FurMark, así encuentra sus dependencias; tools\stress\ para el resto)
+            work_dir = os.path.dirname(exe_path)
+            try:
+                subprocess.Popen([exe_path], cwd=work_dir, **_NWIN)
+            except OSError as e:
+                # 740 = el ejecutable pide elevación: relanzar vía UAC
+                if getattr(e, "winerror", None) != 740:
+                    raise
+                import ctypes
+                ret = ctypes.windll.shell32.ShellExecuteW(
+                    None, "runas", exe_path, None, work_dir, 1
+                )
+                if ret <= 32:
+                    return json.dumps({"error": "Se requieren permisos de administrador."})
+            return json.dumps({"status": "ok"})
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
 
 # ── HTML UI ───────────────────────────────────────────────────────────────
 HTML = """<!DOCTYPE html>
@@ -2902,6 +2949,8 @@ html[data-theme="dark"] #sMsg { color: var(--txt2); opacity: 1; }
   transition: opacity .2s;
 }
 .modal-ov.open { opacity: 1; pointer-events: all; }
+/* Modal cerrado: ni el overlay ni sus hijos (aunque tengan pointer-events:auto) capturan clics */
+.modal-ov:not(.open), .modal-ov:not(.open) * { pointer-events: none !important; }
 .modal-card {
   width: 520px; max-width: calc(100vw - 32px);
   max-height: calc(100vh - 64px); overflow-y: auto;
@@ -3216,6 +3265,24 @@ html[data-theme="light"] .net-sum-stat { background:rgba(255,255,255,.6); }
 .net-sum-sv     { font-size:20px; font-weight:700; }
 .net-sum-sl     { font-size:10px; color:var(--txt2); margin-top:2px; }
 .net-badge-glob { text-align:center; font-size:13px; font-weight:600; padding:9px; border-radius:8px; margin-bottom:12px; }
+/* ── Test de Estrés modal ── */
+.stress-card { background:var(--surface-card); border:1px solid var(--border-card); border-radius:12px; padding:16px; margin-bottom:10px; }
+html[data-theme="dark"] .stress-card { background:#080E1C; border-color:#1A2540; }
+.stress-card-hdr { display:flex; align-items:center; gap:12px; margin-bottom:12px; }
+.stress-icon { font-size:28px; line-height:1; flex-shrink:0; }
+.stress-info { flex:1; min-width:0; }
+.stress-name { font-size:14px; font-weight:700; color:var(--txt); }
+.stress-desc { font-size:12px; color:var(--txt2); margin-top:2px; }
+.stress-badge { background:rgba(26,86,196,0.10); color:#1A56C4; border-radius:999px; padding:3px 10px; font-size:11px; font-weight:600; white-space:nowrap; flex-shrink:0; }
+html[data-theme="dark"] .stress-badge { background:rgba(75,158,255,.15); color:#4B9EFF; }
+.stress-card-ftr { display:flex; align-items:center; justify-content:flex-end; gap:10px; }
+.stress-hint { flex:1; min-width:0; font-size:11px; color:var(--txt2); display:none; }
+.stress-btn { border:none; border-radius:8px; padding:8px 18px; font-family:var(--font-ui); font-size:12.5px; font-weight:600; cursor:pointer; background:#1A56C4; color:#fff; white-space:nowrap; transition:opacity .15s; }
+.stress-btn:hover:not(:disabled) { opacity:.88; }
+.stress-btn:disabled { background:#E5E7EB; color:#9CA3AF; cursor:not-allowed; }
+.stress-toast { display:none; margin-top:4px; padding:10px 14px; border-radius:8px; font-size:13px; font-weight:600; text-align:center; word-break:break-word; }
+.stress-toast.ok  { background:rgba(34,197,94,.12); color:#15803D; }
+.stress-toast.err { background:rgba(239,68,68,.12); color:#B91C1C; }
 </style>
 </head>
 <body>
@@ -3328,6 +3395,7 @@ html[data-theme="light"] .net-sum-stat { background:rgba(255,255,255,.6); }
   <button class="btn btn-t" onclick="abrirModalLimpieza()">&#x1F9F9; Limpiar Sistema</button>
   <button class="btn btn-t" onclick="abrirAdminDispositivos()">&#x2699;&#xFE0F; Inspector de Dispositivos</button>
   <button class="btn btn-t" onclick="abrirWindowsUpdate()">&#x1F6E1;&#xFE0F; Windows al D&iacute;a</button>
+  <button class="btn btn-t" onclick="abrirModalTestEstres()">&#x1F525; Test de Estr&eacute;s</button>
 </div>
 <img id="mascotMain" style="display:none" src="" alt="">
 <div id="emptyState" style="display:none"></div>
@@ -3811,6 +3879,61 @@ html[data-theme="light"] .net-sum-stat { background:rgba(255,255,255,.6); }
         </div>
       </div>
     </div>
+  </div>
+</div>
+
+<div id="stressModal" class="modal-ov" style="z-index:1000" onclick="cerrarModalTestEstresOv(event)">
+  <div class="chk-modal-card" style="max-width:500px;pointer-events:auto;z-index:1001">
+    <button class="modal-x" onclick="cerrarModalTestEstres()">&#x2715;</button>
+    <div style="font-size:16px;font-weight:700;margin-bottom:4px;color:var(--txt)">&#x1F525; Test de Estr&eacute;s</div>
+    <div style="font-size:12px;color:var(--txt2);margin-bottom:16px">Herramientas para testear componentes del equipo</div>
+
+    <div class="stress-card">
+      <div class="stress-card-hdr">
+        <div class="stress-icon">&#x2699;&#xFE0F;</div>
+        <div class="stress-info">
+          <div class="stress-name">HeavyLoad</div>
+          <div class="stress-desc">Test de estr&eacute;s de CPU y RAM</div>
+        </div>
+        <span class="stress-badge">CPU &middot; RAM</span>
+      </div>
+      <div class="stress-card-ftr">
+        <div class="stress-hint" id="stressHint_heavyload">Coloc&aacute; el instalador en tools&#92;stress&#92;</div>
+        <button class="stress-btn" id="stressBtn_heavyload" onclick="lanzarHerramienta('heavyload')" disabled>Verificando&hellip;</button>
+      </div>
+    </div>
+
+    <div class="stress-card">
+      <div class="stress-card-hdr">
+        <div class="stress-icon">&#x1F52C;</div>
+        <div class="stress-info">
+          <div class="stress-name">OCCT</div>
+          <div class="stress-desc">Test completo de CPU, GPU y fuente de poder</div>
+        </div>
+        <span class="stress-badge">CPU &middot; GPU &middot; PSU</span>
+      </div>
+      <div class="stress-card-ftr">
+        <div class="stress-hint" id="stressHint_occt">Coloc&aacute; el instalador en tools&#92;stress&#92;</div>
+        <button class="stress-btn" id="stressBtn_occt" onclick="lanzarHerramienta('occt')" disabled>Verificando&hellip;</button>
+      </div>
+    </div>
+
+    <div class="stress-card">
+      <div class="stress-card-hdr">
+        <div class="stress-icon">&#x1F3AE;</div>
+        <div class="stress-info">
+          <div class="stress-name">FurMark</div>
+          <div class="stress-desc">Benchmark y test de estr&eacute;s de GPU</div>
+        </div>
+        <span class="stress-badge">GPU</span>
+      </div>
+      <div class="stress-card-ftr">
+        <div class="stress-hint" id="stressHint_furmark">Coloc&aacute; la carpeta FurMark_win64&#92; en tools&#92;stress&#92;</div>
+        <button class="stress-btn" id="stressBtn_furmark" onclick="lanzarHerramienta('furmark')" disabled>Verificando&hellip;</button>
+      </div>
+    </div>
+
+    <div class="stress-toast" id="stressToast"></div>
   </div>
 </div>
 
@@ -5726,6 +5849,82 @@ function limpiarColaImpresora(nombre) {
     else _prnResultado(true, 'Cola de impresión limpiada');
   }).catch(function(err) {
     _prnResultado(false, 'Error inesperado: ' + err);
+  });
+}
+
+// ── Test de Estrés modal ───────────────────────────────────────────────────
+var _stressNombres = {heavyload: 'HeavyLoad', occt: 'OCCT', furmark: 'FurMark'};
+var _stressDisponibles = {};
+var _stressToastTmr = null;
+
+function _stressSetBtn(tool, estado) {
+  var btn  = document.getElementById('stressBtn_' + tool);
+  var hint = document.getElementById('stressHint_' + tool);
+  if (estado === 'ok') {
+    btn.disabled = false; btn.textContent = '▶ Lanzar';
+    hint.style.display = 'none';
+  } else if (estado === 'missing') {
+    btn.disabled = true; btn.textContent = 'No encontrado';
+    hint.style.display = 'block';
+  } else {
+    btn.disabled = true; btn.textContent = 'Verificando…';
+    hint.style.display = 'none';
+  }
+}
+
+function _stressToast(ok, msg) {
+  var el = document.getElementById('stressToast');
+  el.className = 'stress-toast ' + (ok ? 'ok' : 'err');
+  el.textContent = msg;
+  el.style.display = 'block';
+  if (_stressToastTmr) clearTimeout(_stressToastTmr);
+  _stressToastTmr = setTimeout(function() { el.style.display = 'none'; _stressToastTmr = null; }, 4000);
+}
+
+function abrirModalTestEstres() {
+  _stressDisponibles = {};
+  Object.keys(_stressNombres).forEach(function(t) { _stressSetBtn(t, 'checking'); });
+  document.getElementById('stressToast').style.display = 'none';
+  document.getElementById('stressModal').classList.add('open');
+  if (!window.pywebview || !window.pywebview.api) return;
+  window.pywebview.api.check_stress_tools().then(function(raw) {
+    var d = JSON.parse(raw);
+    if (d.error) {
+      Object.keys(_stressNombres).forEach(function(t) { _stressSetBtn(t, 'missing'); });
+      _stressToast(false, '⚠️ Error: ' + d.error);
+      return;
+    }
+    _stressDisponibles = d;
+    Object.keys(_stressNombres).forEach(function(t) { _stressSetBtn(t, d[t] ? 'ok' : 'missing'); });
+  }).catch(function() {
+    Object.keys(_stressNombres).forEach(function(t) { _stressSetBtn(t, 'missing'); });
+    _stressToast(false, '⚠️ No se pudo verificar la carpeta tools\\\\stress');
+  });
+}
+
+function cerrarModalTestEstres() {
+  document.getElementById('stressModal').classList.remove('open');
+  if (_stressToastTmr) { clearTimeout(_stressToastTmr); _stressToastTmr = null; }
+  document.getElementById('stressToast').style.display = 'none';
+}
+
+function cerrarModalTestEstresOv(e) {
+  if (e.target === document.getElementById('stressModal')) cerrarModalTestEstres();
+}
+
+function lanzarHerramienta(tool) {
+  if (!_stressDisponibles[tool]) return;
+  var btn = document.getElementById('stressBtn_' + tool);
+  var nombre = _stressNombres[tool] || tool;
+  btn.disabled = true; btn.textContent = 'Lanzando…';
+  window.pywebview.api.launch_stress_tool(tool).then(function(raw) {
+    var d = JSON.parse(raw);
+    if (d.error) _stressToast(false, '⚠️ ' + d.error);
+    else _stressToast(true, '✅ Lanzando ' + nombre + '...');
+    _stressSetBtn(tool, 'ok');
+  }).catch(function(err) {
+    _stressToast(false, '⚠️ Error inesperado: ' + err);
+    _stressSetBtn(tool, 'ok');
   });
 }
 
