@@ -1309,7 +1309,7 @@ class Api:
                         "estado": ("CRÍTICO"  if _hlth == "Unhealthy" else
                                    "MODERADO" if _hlth == "Warning"   else _lbl_h(_hp)),
                     })
-                self.save_diagnostic_record({
+                record_h = {
                     "id":         int(now.timestamp()),
                     "fecha":      now.strftime("%d/%m/%Y %H:%M"),
                     "equipo":     self._hostname,
@@ -1324,7 +1324,12 @@ class Api:
                     "estado_general": {"critico": "CRÍTICO", "atencion": "MODERADO",
                                        "bueno": "ÓPTIMO"}[estado],
                     "recomendaciones": [txt for _lvl, txt in recs],
-                })
+                }
+                self.save_diagnostic_record(record_h)
+                # Resumen IA en segundo plano: no demora la entrega del JPG
+                if self._leer_config().get("claude_api_key", "").strip():
+                    threading.Thread(target=self._auto_ai_summary, args=(record_h,),
+                                     daemon=True).start()
             except Exception:
                 pass
 
@@ -2858,6 +2863,211 @@ class Api:
         except Exception as e:
             return json.dumps({"error": str(e)})
 
+    # ── Resumen IA (API de Claude) ─────────────────────────────────────
+    # config.json junto al .exe guarda la API key (está en .gitignore).
+    _AI_MODEL = "claude-haiku-4-5"
+
+    def _config_path(self):
+        return os.path.join(self._office_base_path(), "config.json")
+
+    def _leer_config(self):
+        path = self._config_path()
+        if not os.path.exists(path):
+            return {}
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+
+    def has_api_key(self):
+        return json.dumps({"configured": bool(self._leer_config().get("claude_api_key", "").strip())})
+
+    def save_api_key(self, api_key):
+        try:
+            config = self._leer_config()
+            config["claude_api_key"] = str(api_key or "").strip()
+            with open(self._config_path(), "w", encoding="utf-8") as f:
+                json.dump(config, f, indent=2)
+            return json.dumps({"status": "ok"})
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
+    def _collect_diagnostic_snapshot(self):
+        """Mismos datos y mismas reglas que generate_visual_report / el historial,
+        pero sin generar el JPG."""
+        with self._lock:
+            cpu_pct = self._cpu_value
+        vm      = psutil.virtual_memory()
+        ram_pct = vm.percent
+        ram_tg  = round(vm.total / (1024 ** 3), 1)
+        disk_health = (self._disk_health_cache if self._disk_health_cache is not None
+                       else self._get_disk_health()) or []
+        parts = []
+        for _p in psutil.disk_partitions(all=False):
+            try:
+                parts.append({"mp": _p.mountpoint, "pct": psutil.disk_usage(_p.mountpoint).percent})
+            except Exception:
+                pass
+        parts_ltr = {pt["mp"][0].upper(): pt for pt in parts if pt.get("mp")}
+
+        def _dpct(dnum):
+            for ltr in {"0": ["C"], "1": ["D", "E"], "2": ["E", "F"]}.get(str(dnum), ["C"]):
+                if ltr in parts_ltr:
+                    return parts_ltr[ltr]["pct"]
+            return max((p["pct"] for p in parts), default=0.0)
+
+        def _lbl(p):
+            return "CRÍTICO" if p > 90 else ("MODERADO" if p >= 70 else "ÓPTIMO")
+
+        cpu_i, ram_i = int(round(cpu_pct)), int(round(ram_pct))
+        max_dpct      = max((_dpct(dh.get("disk_num", "")) for dh in disk_health), default=0.0)
+        any_unhealthy = any(str(dh.get("health", "")) == "Unhealthy" for dh in disk_health)
+        any_warning   = any(str(dh.get("health", "")) == "Warning"   for dh in disk_health)
+        if cpu_pct > 90 or ram_pct > 85 or max_dpct > 95 or any_unhealthy:
+            estado = "CRÍTICO"
+        elif ram_pct >= 70 or max_dpct > 85 or any_warning:
+            estado = "MODERADO"
+        else:
+            estado = "ÓPTIMO"
+
+        recs = []
+        if cpu_pct > 90:
+            recs.append(f"El procesador está al límite ({cpu_i}%).")
+        elif cpu_pct >= 70:
+            recs.append(f"El procesador tiene carga moderada ({cpu_i}%).")
+        if ram_pct > 85:
+            recs.append(f"La memoria RAM está casi llena ({ram_i}%). Se recomienda ampliar de "
+                        f"{int(ram_tg)} GB a {int(ram_tg) * 2} GB.")
+        elif ram_pct >= 70:
+            recs.append(f"La RAM está siendo muy utilizada ({ram_i}%).")
+        discos = []
+        for dh in disk_health:
+            dp    = _dpct(dh.get("disk_num", ""))
+            hlth  = str(dh.get("health", "") or "")
+            dname = str(dh.get("name", "Disco") or "Disco").strip()
+            if hlth == "Unhealthy":
+                recs.append(f"El disco {dname} presenta fallas: respaldar datos y reemplazarlo.")
+            elif hlth == "Warning":
+                recs.append(f"El disco {dname} muestra señales de desgaste.")
+            if dp > 90:
+                recs.append(f"El disco {dname} está casi lleno ({dp:.0f}%).")
+            elif dp > 75:
+                recs.append(f"El disco {dname} tiene poco espacio ({dp:.0f}%).")
+            discos.append({
+                "nombre": dname,
+                "tamaño": str(dh.get("size", "N/D") or "N/D"),
+                "uso_pct": int(round(dp)),
+                "estado": ("CRÍTICO"  if hlth == "Unhealthy" else
+                           "MODERADO" if hlth == "Warning"   else _lbl(dp)),
+            })
+        return {
+            "equipo":     self._hostname,
+            "usuario":    os.environ.get("USERNAME", "N/D"),
+            "cpu_modelo": (self._cpu_model or "N/D").strip(),
+            "cpu_uso":    cpu_i,
+            "cpu_estado": _lbl(cpu_pct),
+            "ram_usada":  round(vm.used / (1024 ** 3), 1),
+            "ram_total":  ram_tg,
+            "ram_estado": _lbl(ram_pct),
+            "discos":     discos,
+            "estado_general":  estado,
+            "recomendaciones": recs,
+        }
+
+    def get_current_diagnostics(self):
+        try:
+            return json.dumps(self._collect_diagnostic_snapshot(), ensure_ascii=False)
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
+    def get_ai_summary(self, diagnostico_data):
+        import urllib.request, urllib.error
+        try:
+            api_key = self._leer_config().get("claude_api_key", "").strip()
+            if not api_key:
+                return json.dumps({"error": "no_api_key"})
+
+            data = json.loads(diagnostico_data) if isinstance(diagnostico_data, str) else diagnostico_data
+            prompt = f"""Sos un técnico de PC House, una tienda de reparación de computadoras en Paraguay.
+Analizá este diagnóstico técnico y generá un resumen claro y simple para el cliente.
+El resumen debe ser en español, amigable, sin tecnicismos, y con recomendaciones concretas.
+Máximo 150 palabras. Usá emojis para hacerlo más visual.
+Escribí en texto plano, sin formato Markdown (sin asteriscos, numerales ni títulos).
+
+DATOS DEL EQUIPO:
+- Equipo: {data.get('equipo', 'N/D')}
+- CPU: {data.get('cpu_modelo', 'N/D')} al {data.get('cpu_uso', 0)}% — Estado: {data.get('cpu_estado', 'N/D')}
+- RAM: {data.get('ram_usada', 0)} GB usados de {data.get('ram_total', 0)} GB — Estado: {data.get('ram_estado', 'N/D')}
+- Discos: {json.dumps(data.get('discos', []), ensure_ascii=False)}
+- Estado general: {data.get('estado_general', 'N/D')}
+- Recomendaciones previas: {json.dumps(data.get('recomendaciones', []), ensure_ascii=False)}
+
+Generá el resumen para el cliente:"""
+
+            body = json.dumps({
+                "model": Api._AI_MODEL,
+                # 150 palabras en español + emojis ≈ 300-400 tokens: margen para no cortar
+                "max_tokens": 1024,
+                "messages": [{"role": "user", "content": prompt}],
+            }).encode("utf-8")
+            req = urllib.request.Request(
+                "https://api.anthropic.com/v1/messages",
+                data=body,
+                headers={
+                    "x-api-key": api_key,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                result = json.loads(resp.read().decode("utf-8"))
+
+            if result.get("stop_reason") == "refusal":
+                return json.dumps({"error": "refusal"})
+            summary = "".join(b.get("text", "") for b in result.get("content", [])
+                              if b.get("type") == "text").strip()
+            if not summary:
+                return json.dumps({"error": "empty"})
+            return json.dumps({"status": "ok", "summary": summary}, ensure_ascii=False)
+
+        except urllib.error.HTTPError as e:
+            detail = ""
+            try:
+                detail = json.loads(e.read().decode("utf-8")).get("error", {}).get("message", "")
+            except Exception:
+                pass
+            codes = {401: "invalid_api_key", 403: "forbidden", 429: "rate_limit",
+                     529: "overloaded"}
+            return json.dumps({"error": codes.get(e.code, f"HTTP {e.code}"), "detail": detail},
+                              ensure_ascii=False)
+        except urllib.error.URLError as e:
+            return json.dumps({"error": "network", "detail": str(e.reason)})
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
+    def _set_history_field(self, record_id, key, value):
+        with Api._HIST_LOCK:
+            historial = self._leer_historial()
+            for r in historial:
+                if str(r.get("id")) == str(record_id):
+                    r[key] = value
+                    self._escribir_historial(historial)
+                    return
+
+    def _auto_ai_summary(self, record):
+        """Hilo lanzado por generate_visual_report: resumen IA del reporte recién
+        generado, guardado en el historial y enviado al modal si está abierto."""
+        try:
+            res = json.loads(self.get_ai_summary(record))
+            if res.get("status") == "ok":
+                self._set_history_field(record.get("id"), "resumen_ia", res["summary"])
+            webview.windows[0].evaluate_js("resumenIAAuto(" + json.dumps(res) + ")")
+        except Exception:
+            pass
+
 
 # ── HTML UI ───────────────────────────────────────────────────────────────
 HTML = """<!DOCTYPE html>
@@ -3581,6 +3791,12 @@ html[data-theme="dark"] .red-card { background:#080E1C; border-color:#1A2540; }
 html[data-theme="dark"] .red-badge.online { background:rgba(34,197,94,.15); color:#22C55E; }
 html[data-theme="dark"] .red-badge.me     { background:rgba(75,158,255,.15); color:#4B9EFF; }
 html[data-theme="dark"] .red-badge.gw     { background:rgba(255,255,255,.08); color:#9CA3AF; }
+/* ── Resumen IA modal ── */
+.ia-box { background:rgba(26,86,196,0.05); border:1px solid rgba(26,86,196,0.15); border-radius:12px; padding:16px; font-size:14px; line-height:1.7; color:var(--text-on-card); white-space:pre-wrap; word-break:break-word; max-height:340px; overflow-y:auto; margin-bottom:14px; -webkit-user-select:text; user-select:text; }
+html[data-theme="dark"] .ia-box { background:rgba(75,158,255,.06); border-color:rgba(75,158,255,.18); color:var(--txt); }
+.ia-meta { font-size:11px; color:var(--txt2); margin-bottom:8px; }
+.ia-small { font-size:11px; color:var(--txt2); margin-top:8px; }
+.ia-err-detail { font-size:11.5px; color:var(--txt2); margin-top:6px; word-break:break-word; }
 .hist-empty { text-align:center; background:rgba(255,255,255,0.15); border:1px solid rgba(255,255,255,0.25); border-radius:10px; padding:16px 14px; color:white; font-size:13px; line-height:1.6; }
 </style>
 </head>
@@ -3698,6 +3914,7 @@ html[data-theme="dark"] .red-badge.gw     { background:rgba(255,255,255,.08); co
   <button class="btn btn-t" onclick="abrirModalTestEstres()">&#x1F525; Test de Estr&eacute;s</button>
   <button class="btn btn-t" onclick="abrirModalAntivirus()">&#x1F6E1;&#xFE0F; Antivirus</button>
   <button class="btn btn-t" onclick="abrirModalModoRed()">&#x1F310; Modo Red</button>
+  <button class="btn btn-t" onclick="abrirModalResumenIA()">&#x1F916; Resumen IA</button>
 </div>
 
 <div class="section-label hist-hdr">
@@ -4320,6 +4537,55 @@ html[data-theme="dark"] .red-badge.gw     { background:rgba(255,255,255,.08); co
     <div id="redErrorSection" style="display:none"></div>
 
     <button class="btn btn-s" id="btnRedRescan" style="width:100%;padding:10px;border-radius:10px" onclick="escanearRed()" disabled>&#x1F504; Escanear de nuevo</button>
+  </div>
+</div>
+
+<div id="resumenIAModal" class="modal-ov" style="z-index:1000" onclick="cerrarModalResumenIAOv(event)">
+  <div class="chk-modal-card" style="max-width:520px;pointer-events:auto;z-index:1001">
+    <button class="modal-x" onclick="cerrarModalResumenIA()">&#x2715;</button>
+    <div style="font-size:16px;font-weight:700;margin-bottom:4px;color:var(--txt)">&#x1F916; Resumen IA</div>
+    <div style="font-size:12px;color:var(--txt2);margin-bottom:16px">An&aacute;lisis inteligente del estado del equipo</div>
+
+    <!-- Estado 1: sin API key -->
+    <div id="iaFormSection" style="display:none">
+      <div style="font-size:13px;color:var(--txt);margin-bottom:6px">Para usar esta funci&oacute;n necesit&aacute;s una API key de Claude</div>
+      <input type="password" id="iaKeyInput" class="bl-input" placeholder="sk-ant-..." autocomplete="off" spellcheck="false">
+      <div id="iaFormErr" style="font-size:12px;color:var(--red);margin-top:8px;display:none"></div>
+      <button class="btn btn-p" style="width:100%;padding:11px;border-radius:10px;font-size:14px;margin-top:12px" onclick="guardarAPIKey()">Guardar y continuar</button>
+      <div class="ia-small">Tu key se guarda localmente en config.json</div>
+    </div>
+
+    <!-- Estado 2: analizando -->
+    <div id="iaLoadingSection" style="display:none">
+      <div style="text-align:center;padding:32px 0">
+        <div style="width:40px;height:40px;border:3px solid var(--bar-track);border-top-color:var(--brand);border-radius:50%;animation:spin .8s linear infinite;margin:0 auto 14px"></div>
+        <div style="font-size:14px;font-weight:600;color:var(--txt)">&#x1F916; Analizando el estado del equipo&hellip;</div>
+        <div style="font-size:11px;color:var(--txt2);margin-top:4px">Esto puede tardar unos segundos</div>
+      </div>
+    </div>
+
+    <!-- Estado 3: resultado -->
+    <div id="iaResultSection" style="display:none">
+      <div class="ia-meta" id="iaMeta"></div>
+      <div class="ia-box" id="iaSummary"></div>
+      <div style="display:flex;gap:10px;justify-content:flex-end">
+        <button class="btn-chk-confirm-no" style="padding:9px 18px" onclick="mostrarFormAPIKey()">&#x2699;&#xFE0F; API key</button>
+        <button class="btn btn-s" style="padding:9px 18px" onclick="generarResumenIA()">&#x1F504; Regenerar</button>
+        <button class="btn btn-p" style="padding:9px 24px" onclick="cerrarModalResumenIA()">Cerrar</button>
+      </div>
+    </div>
+
+    <!-- Estado 4: error -->
+    <div id="iaErrorSection" style="display:none">
+      <div style="text-align:center;padding:16px 0 18px">
+        <div style="font-size:14px;font-weight:600;color:var(--txt)" id="iaErrMsg">&#x274C; No se pudo conectar con Claude. Verific&aacute; tu API key.</div>
+        <div class="ia-err-detail" id="iaErrDetail"></div>
+      </div>
+      <div style="display:flex;gap:10px;justify-content:center">
+        <button class="btn-chk-confirm-no" style="padding:9px 18px" onclick="mostrarFormAPIKey()">&#x2699;&#xFE0F; Cambiar API key</button>
+        <button class="btn btn-s" style="padding:9px 18px" onclick="generarResumenIA()">&#x1F504; Reintentar</button>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -6557,6 +6823,120 @@ function renderizarRed(data) {
       + '</div>';
   }).join('');
   _redMostrar('redResultSection');
+}
+
+// ── Resumen IA modal ───────────────────────────────────────────────────────
+var _iaReqId = 0;
+var _iaErrores = {
+  invalid_api_key: 'La API key no es v\xE1lida o fue revocada.',
+  forbidden:       'La API key no tiene permiso para usar este modelo.',
+  rate_limit:      'Demasiadas solicitudes seguidas. Esper\xE1 un momento y reintent\xE1.',
+  overloaded:      'Los servidores de Claude est\xE1n saturados. Reintent\xE1 en unos minutos.',
+  network:         'Sin conexi\xF3n a internet o no se pudo llegar a api.anthropic.com.',
+  refusal:         'Claude no pudo generar el resumen para estos datos.',
+  empty:           'Claude devolvi\xF3 una respuesta vac\xEDa.'
+};
+
+function _iaMostrar(seccion) {
+  ['iaFormSection','iaLoadingSection','iaResultSection','iaErrorSection'].forEach(function(id) {
+    document.getElementById(id).style.display = (id === seccion) ? 'block' : 'none';
+  });
+}
+
+function _iaMostrarResultado(summary, meta) {
+  document.getElementById('iaSummary').textContent = summary;
+  document.getElementById('iaMeta').textContent = meta || '';
+  _iaMostrar('iaResultSection');
+}
+
+function _iaMostrarError(res) {
+  if (res.error === 'no_api_key') { mostrarFormAPIKey(); return; }
+  var detalle = _iaErrores[res.error] || ('Error: ' + res.error);
+  if (res.detail) detalle += ' (' + res.detail + ')';
+  document.getElementById('iaErrDetail').textContent = detalle;
+  _iaMostrar('iaErrorSection');
+}
+
+function abrirModalResumenIA() {
+  document.getElementById('resumenIAModal').classList.add('open');
+  _iaMostrar('iaLoadingSection');
+  if (!window.pywebview || !window.pywebview.api) return;
+  window.pywebview.api.has_api_key().then(function(raw) {
+    var d = JSON.parse(raw);
+    if (d.configured) generarResumenIA();
+    else mostrarFormAPIKey();
+  }).catch(function() { mostrarFormAPIKey(); });
+}
+
+function cerrarModalResumenIA() {
+  document.getElementById('resumenIAModal').classList.remove('open');
+  _iaReqId++;
+  document.getElementById('iaKeyInput').value = '';
+  _iaMostrar('iaLoadingSection');
+}
+
+function cerrarModalResumenIAOv(e) {
+  if (e.target === document.getElementById('resumenIAModal')) cerrarModalResumenIA();
+}
+
+function generarResumenIA() {
+  if (!window.pywebview || !window.pywebview.api) return;
+  var miId = ++_iaReqId;
+  _iaMostrar('iaLoadingSection');
+  window.pywebview.api.get_current_diagnostics().then(function(rawDiag) {
+    if (miId !== _iaReqId) return null;
+    var diag = JSON.parse(rawDiag);
+    if (diag.error) { _iaMostrarError({error: diag.error}); return null; }
+    return window.pywebview.api.get_ai_summary(rawDiag).then(function(raw) {
+      if (miId !== _iaReqId) return;
+      var res = JSON.parse(raw);
+      if (res.status === 'ok') {
+        _iaMostrarResultado(res.summary, (diag.equipo || '') + ' \xB7 Estado general: ' + (diag.estado_general || 'N/D'));
+      } else {
+        _iaMostrarError(res);
+      }
+    });
+  }).catch(function(err) {
+    if (miId !== _iaReqId) return;
+    _iaMostrarError({error: String(err)});
+  });
+}
+
+function guardarAPIKey() {
+  var key = document.getElementById('iaKeyInput').value.trim();
+  var errEl = document.getElementById('iaFormErr');
+  errEl.style.display = 'none';
+  if (!key) { errEl.textContent = 'Ingres\xE1 la API key.'; errEl.style.display = 'block'; return; }
+  if (key.indexOf('sk-ant-') !== 0) {
+    errEl.textContent = 'La API key de Claude empieza con sk-ant-'; errEl.style.display = 'block'; return;
+  }
+  window.pywebview.api.save_api_key(key).then(function(raw) {
+    var d = JSON.parse(raw);
+    if (d.error) { errEl.textContent = 'No se pudo guardar: ' + d.error; errEl.style.display = 'block'; return; }
+    document.getElementById('iaKeyInput').value = '';
+    generarResumenIA();
+  }).catch(function(err) {
+    errEl.textContent = 'Error inesperado: ' + err; errEl.style.display = 'block';
+  });
+}
+
+function mostrarFormAPIKey() {
+  _iaReqId++;
+  document.getElementById('iaKeyInput').value = '';
+  document.getElementById('iaFormErr').style.display = 'none';
+  _iaMostrar('iaFormSection');
+  document.getElementById('iaKeyInput').focus();
+}
+
+// Llamada desde Python (hilo de generate_visual_report) cuando termina el
+// resumen automático del reporte recién generado
+function resumenIAAuto(res) {
+  cargarHistorial();
+  if (!document.getElementById('resumenIAModal').classList.contains('open')) return;
+  if (document.getElementById('iaFormSection').style.display === 'block') return;
+  _iaReqId++;
+  if (res.status === 'ok') _iaMostrarResultado(res.summary, 'Resumen del reporte reci\xE9n generado');
+  else _iaMostrarError(res);
 }
 
 window.addEventListener('resize', () => { _drawCPUFrame(_cpuDisp); drawRAM(_lastRamPct); });

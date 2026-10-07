@@ -24,3 +24,6 @@ Nueva carpeta/
 # Historial local de diagnósticos (se genera al lado del .exe / del .py)
 historial_diagnosticos.json
 historial_diagnosticos.json.tmp
+
+# Configuración local con la API key de Claude — NUNCA subir
+config.json
