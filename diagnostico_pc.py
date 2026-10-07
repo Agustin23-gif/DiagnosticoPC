@@ -1294,6 +1294,40 @@ class Api:
 
             shutil.copy2(jpg_path, out_path)
 
+            # ── Historial de diagnósticos (nunca rompe el reporte) ────────────
+            try:
+                def _lbl_h(p):
+                    return "CRÍTICO" if p > 90 else ("MODERADO" if p >= 70 else "ÓPTIMO")
+                discos_h = []
+                for dh in disk_health:
+                    _hp   = _dpct(dh.get("disk_num", ""))
+                    _hlth = str(dh.get("health", "") or "")
+                    discos_h.append({
+                        "nombre": str(dh.get("name", "Disco") or "Disco").strip(),
+                        "tamaño": str(dh.get("size", "N/D") or "N/D"),
+                        "uso_pct": int(round(_hp)),
+                        "estado": ("CRÍTICO"  if _hlth == "Unhealthy" else
+                                   "MODERADO" if _hlth == "Warning"   else _lbl_h(_hp)),
+                    })
+                self.save_diagnostic_record({
+                    "id":         int(now.timestamp()),
+                    "fecha":      now.strftime("%d/%m/%Y %H:%M"),
+                    "equipo":     self._hostname,
+                    "usuario":    username,
+                    "cpu_modelo": cpu_model,
+                    "cpu_uso":    cpu_i,
+                    "cpu_estado": _lbl_h(cpu_pct),
+                    "ram_usada":  ram_ug,
+                    "ram_total":  ram_tg,
+                    "ram_estado": _lbl_h(ram_pct),
+                    "discos":     discos_h,
+                    "estado_general": {"critico": "CRÍTICO", "atencion": "MODERADO",
+                                       "bueno": "ÓPTIMO"}[estado],
+                    "recomendaciones": [txt for _lvl, txt in recs],
+                })
+            except Exception:
+                pass
+
             img_pil = Image.open(jpg_path)
             prev    = img_pil.copy()
             prev.thumbnail((450, 900), Image.LANCZOS)
@@ -2642,6 +2676,72 @@ class Api:
         except Exception as e:
             return json.dumps({"error": str(e)})
 
+    # ── Historial de Diagnósticos ──────────────────────────────────────
+    # historial_diagnosticos.json junto al .exe (misma base que tools\).
+    # pywebview atiende cada llamada JS en su propio hilo: el lock evita que
+    # dos escrituras simultáneas se pisen.
+    _HIST_LOCK = threading.Lock()
+    _HIST_MAX  = 50
+
+    def _historial_path(self):
+        return os.path.join(self._office_base_path(), "historial_diagnosticos.json")
+
+    def _leer_historial(self):
+        path = self._historial_path()
+        if not os.path.exists(path):
+            return []
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return data if isinstance(data, list) else []
+        except Exception:
+            return []
+
+    def _escribir_historial(self, historial):
+        # Escritura atómica: si se desconecta el pendrive a mitad de camino
+        # el archivo anterior queda intacto
+        path = self._historial_path()
+        tmp  = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(historial, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, path)
+
+    def save_diagnostic_record(self, data):
+        try:
+            record = json.loads(data) if isinstance(data, str) else data
+            with Api._HIST_LOCK:
+                historial = self._leer_historial()
+                historial.insert(0, record)
+                self._escribir_historial(historial[:Api._HIST_MAX])
+            return json.dumps({"status": "ok"})
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
+    def get_diagnostic_history(self):
+        try:
+            with Api._HIST_LOCK:
+                return json.dumps(self._leer_historial(), ensure_ascii=False)
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
+    def delete_diagnostic_record(self, record_id):
+        try:
+            with Api._HIST_LOCK:
+                historial = self._leer_historial()
+                historial = [r for r in historial if str(r.get("id")) != str(record_id)]
+                self._escribir_historial(historial)
+            return json.dumps({"status": "ok"})
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
+    def clear_diagnostic_history(self):
+        try:
+            with Api._HIST_LOCK:
+                self._escribir_historial([])
+            return json.dumps({"status": "ok"})
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
 
 # ── HTML UI ───────────────────────────────────────────────────────────────
 HTML = """<!DOCTYPE html>
@@ -3325,6 +3425,29 @@ html[data-theme="dark"] .stress-badge { background:rgba(75,158,255,.15); color:#
 .stress-toast { display:none; margin-top:4px; padding:10px 14px; border-radius:8px; font-size:13px; font-weight:600; text-align:center; word-break:break-word; }
 .stress-toast.ok  { background:rgba(34,197,94,.12); color:#15803D; }
 .stress-toast.err { background:rgba(239,68,68,.12); color:#B91C1C; }
+/* ── Historial de Diagnósticos ── */
+.hist-hdr { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+.hist-hdr-btns { display:flex; align-items:center; gap:6px; }
+.hist-ghost-btn { background:transparent; border:1px solid rgba(255,255,255,.35); color:rgba(255,255,255,.85); border-radius:6px; padding:2px 10px; font-family:var(--font-ui); font-size:10.5px; font-weight:600; letter-spacing:normal; text-transform:none; cursor:pointer; transition:background .15s; }
+.hist-ghost-btn:hover { background:rgba(255,255,255,.15); }
+.hist-ghost-btn.danger { border-color:rgba(239,68,68,.6); background:rgba(239,68,68,.25); color:#fff; }
+.hist-confirm-txt { font-size:10.5px; font-weight:600; letter-spacing:normal; text-transform:none; color:rgba(255,255,255,.85); }
+/* Zona central entre header y barra de estado: el scroll va acá, nunca en html/body */
+.main-scroll { flex:1; min-height:0; overflow-y:auto; overflow-x:hidden; }
+.hist-section { padding:0 20px 10px; }
+.hist-list { max-height:260px; overflow-y:auto; padding-right:4px; }
+.hist-row { display:flex; align-items:center; gap:12px; background:rgba(255,255,255,0.15); border:1px solid rgba(255,255,255,0.25); border-radius:10px; padding:10px 14px; margin-bottom:6px; color:white; }
+.hist-when { flex:0 0 150px; min-width:0; }
+.hist-fecha { font-size:13px; font-weight:600; line-height:1.3; }
+.hist-equipo { font-size:11px; opacity:.75; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.hist-badge { flex-shrink:0; min-width:84px; text-align:center; font-size:10px; font-weight:700; letter-spacing:.06em; padding:3px 10px; border-radius:999px; color:#fff; }
+.hist-badge.ok   { background:#22C55E; }
+.hist-badge.warn { background:#F59E0B; }
+.hist-badge.crit { background:#EF4444; }
+.hist-metrics { flex:1; min-width:0; font-size:12px; font-family:var(--font-mono); opacity:.9; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.hist-del-btn { flex-shrink:0; background:transparent; border:1px solid rgba(255,255,255,.25); border-radius:8px; padding:3px 8px; font-size:13px; cursor:pointer; transition:background .15s; }
+.hist-del-btn:hover { background:rgba(239,68,68,.30); }
+.hist-empty { text-align:center; background:rgba(255,255,255,0.15); border:1px solid rgba(255,255,255,0.25); border-radius:10px; padding:16px 14px; color:white; font-size:13px; line-height:1.6; }
 </style>
 </head>
 <body>
@@ -3345,6 +3468,7 @@ html[data-theme="dark"] .stress-badge { background:rgba(75,158,255,.15); color:#
   </button>
 </header>
 
+<main class="main-scroll">
 <div class="section-label">MONITOREO EN TIEMPO REAL</div>
 <div class="metrics">
   <div class="card">
@@ -3440,9 +3564,21 @@ html[data-theme="dark"] .stress-badge { background:rgba(75,158,255,.15); color:#
   <button class="btn btn-t" onclick="abrirModalTestEstres()">&#x1F525; Test de Estr&eacute;s</button>
   <button class="btn btn-t" onclick="abrirModalAntivirus()">&#x1F6E1;&#xFE0F; Antivirus</button>
 </div>
+
+<div class="section-label hist-hdr">
+  <span>HISTORIAL DE DIAGN&Oacute;STICOS</span>
+  <div class="hist-hdr-btns" id="histHdrBtns">
+    <button class="hist-ghost-btn" id="histClearBtn" onclick="limpiarHistorial()">Limpiar historial</button>
+  </div>
+</div>
+<div class="hist-section">
+  <div class="hist-list" id="histList"></div>
+</div>
+
 <img id="mascotMain" style="display:none" src="" alt="">
 <div id="emptyState" style="display:none"></div>
 <img id="repPreview" style="display:none" alt="">
+</main>
 
 <div class="sbar">
   <div class="spin" id="spin"></div>
@@ -4288,6 +4424,7 @@ function doGenVisual() {
       lastReportPath = d.path;
       document.getElementById('btnOpenFolder').style.display = 'inline-block';
       setStatus('Reporte guardado en: ' + d.path, 'ok');
+      cargarHistorial();
     }
     document.getElementById('btnGenVisual').disabled = false;
   }).catch(()=>{
@@ -6086,6 +6223,90 @@ function lanzarAntivirus(tool) {
     _avSetBtn(tool, 'ok');
   });
 }
+
+// ── Historial de Diagnósticos ──────────────────────────────────────────────
+var _histConfirmTmr = null;
+
+function _histBadgeCls(estado) {
+  if (estado === 'CRÍTICO')  return 'crit';
+  if (estado === 'MODERADO') return 'warn';
+  return 'ok';
+}
+
+function _histMensaje(html) {
+  document.getElementById('histList').innerHTML = '<div class="hist-empty">' + html + '</div>';
+}
+
+function cargarHistorial() {
+  if (!window.pywebview || !window.pywebview.api) return;
+  window.pywebview.api.get_diagnostic_history().then(function(raw) {
+    var d = JSON.parse(raw);
+    if (d.error) { _histMensaje('&#x26A0;&#xFE0F; Error al leer el historial: ' + _escHtml(d.error)); return; }
+    renderizarHistorial(Array.isArray(d) ? d : []);
+  }).catch(function() {
+    _histMensaje('&#x26A0;&#xFE0F; No se pudo cargar el historial.');
+  });
+}
+
+function renderizarHistorial(registros) {
+  if (!registros.length) {
+    _histMensaje('No hay diagn&oacute;sticos registrados a&uacute;n.<br>Gener&aacute; tu primer reporte con el bot&oacute;n &#x1F4CA; Generar Reporte Visual');
+    return;
+  }
+  document.getElementById('histList').innerHTML = registros.slice(0, 10).map(function(r) {
+    var ramPct = r.ram_total ? Math.round(r.ram_usada / r.ram_total * 100) : 0;
+    var discoMax = (r.discos || []).reduce(function(m, dk) { return Math.max(m, dk.uso_pct || 0); }, 0);
+    var estado = r.estado_general || 'N/D';
+    return '<div class="hist-row">'
+      + '<div class="hist-when">'
+      +   '<div class="hist-fecha">' + _escHtml(r.fecha || '') + '</div>'
+      +   '<div class="hist-equipo">' + _escHtml(r.equipo || '') + '</div>'
+      + '</div>'
+      + '<span class="hist-badge ' + _histBadgeCls(estado) + '">' + _escHtml(estado) + '</span>'
+      + '<div class="hist-metrics">CPU ' + (r.cpu_uso || 0) + '% &middot; RAM ' + ramPct + '% &middot; Disco ' + discoMax + '%</div>'
+      + '<button class="hist-del-btn" title="Eliminar registro" onclick="eliminarRegistro(' + Number(r.id) + ')">&#x1F5D1;&#xFE0F;</button>'
+      + '</div>';
+  }).join('');
+}
+
+function eliminarRegistro(id) {
+  window.pywebview.api.delete_diagnostic_record(String(id)).then(function(raw) {
+    var d = JSON.parse(raw);
+    if (d.error) setStatus('Error al eliminar el registro: ' + d.error, 'err');
+    cargarHistorial();
+  }).catch(function() {
+    setStatus('Error inesperado al eliminar el registro', 'err');
+  });
+}
+
+function _histRestaurarBtn() {
+  if (_histConfirmTmr) { clearTimeout(_histConfirmTmr); _histConfirmTmr = null; }
+  document.getElementById('histHdrBtns').innerHTML =
+    '<button class="hist-ghost-btn" id="histClearBtn" onclick="limpiarHistorial()">Limpiar historial</button>';
+}
+
+function limpiarHistorial() {
+  // Confirmación inline (sin diálogo nativo); se cancela sola a los 5 s
+  document.getElementById('histHdrBtns').innerHTML =
+    '<span class="hist-confirm-txt">&iquest;Borrar todo el historial?</span>'
+    + '<button class="hist-ghost-btn danger" onclick="confirmarLimpiarHistorial()">S&iacute;, borrar</button>'
+    + '<button class="hist-ghost-btn" onclick="_histRestaurarBtn()">Cancelar</button>';
+  if (_histConfirmTmr) clearTimeout(_histConfirmTmr);
+  _histConfirmTmr = setTimeout(_histRestaurarBtn, 5000);
+}
+
+function confirmarLimpiarHistorial() {
+  _histRestaurarBtn();
+  window.pywebview.api.clear_diagnostic_history().then(function(raw) {
+    var d = JSON.parse(raw);
+    if (d.error) setStatus('Error al limpiar el historial: ' + d.error, 'err');
+    cargarHistorial();
+  }).catch(function() {
+    setStatus('Error inesperado al limpiar el historial', 'err');
+  });
+}
+
+window.addEventListener('pywebviewready', function() { cargarHistorial(); });
 
 window.addEventListener('resize', () => { _drawCPUFrame(_cpuDisp); drawRAM(_lastRamPct); });
 </script>

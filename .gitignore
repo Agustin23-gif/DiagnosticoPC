@@ -20,3 +20,7 @@ Nueva carpeta/
 
 # Claude Code
 .claude/
+
+# Historial local de diagnósticos (se genera al lado del .exe / del .py)
+historial_diagnosticos.json
+historial_diagnosticos.json.tmp
