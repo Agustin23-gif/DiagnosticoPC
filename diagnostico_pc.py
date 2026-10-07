@@ -2600,6 +2600,48 @@ class Api:
         except Exception as e:
             return json.dumps({"error": str(e)})
 
+    # ── Antivirus ──────────────────────────────────────────────────────
+    # Herramientas en tools\antivirus\ junto al .exe (misma base que tools\stress\).
+    _ANTIVIRUS_TOOLS = {
+        "adwcleaner":   "adwcleaner.exe",
+        "malwarebytes": "MBSetup-8.8.exe",
+    }
+
+    def check_antivirus_tools(self):
+        try:
+            antivirus_path = os.path.join(self._office_base_path(), "tools", "antivirus")
+            tools = {
+                tool: os.path.exists(os.path.join(antivirus_path, fname))
+                for tool, fname in Api._ANTIVIRUS_TOOLS.items()
+            }
+            return json.dumps(tools)
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
+    def launch_antivirus_tool(self, tool):
+        try:
+            if tool not in Api._ANTIVIRUS_TOOLS:
+                return json.dumps({"error": "Herramienta no reconocida"})
+            antivirus_path = os.path.join(self._office_base_path(), "tools", "antivirus")
+            exe_path = os.path.join(antivirus_path, Api._ANTIVIRUS_TOOLS[tool])
+            if not os.path.exists(exe_path):
+                return json.dumps({"error": f"No se encontró {Api._ANTIVIRUS_TOOLS[tool]}"})
+            try:
+                subprocess.Popen([exe_path], cwd=antivirus_path, **_NWIN)
+            except OSError as e:
+                # 740 = el ejecutable pide elevación: relanzar vía UAC
+                if getattr(e, "winerror", None) != 740:
+                    raise
+                import ctypes
+                ret = ctypes.windll.shell32.ShellExecuteW(
+                    None, "runas", exe_path, None, antivirus_path, 1
+                )
+                if ret <= 32:
+                    return json.dumps({"error": "Se requieren permisos de administrador."})
+            return json.dumps({"status": "ok"})
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
 
 # ── HTML UI ───────────────────────────────────────────────────────────────
 HTML = """<!DOCTYPE html>
@@ -2862,7 +2904,7 @@ html[data-theme="light"] .bay-stripe { background: rgba(255,255,255,.15); }
 .disk-name { color: var(--txt); font-weight: 600; font-family: var(--font-mono); }
 
 /* ── Diagnóstico actions ── */
-.diag-actions { display: flex; align-items: center; gap: 6px; padding: 0 20px 10px; flex-shrink: 0; flex-wrap: nowrap; }
+.diag-actions { display: flex; align-items: center; gap: 8px; padding: 0 20px 10px; flex-shrink: 0; flex-wrap: wrap; }
 .diag-actions .btn { font-size: 12px; padding: 6px 12px; border-radius: 8px; }
 #repPreview {
   width: 100%; height: 100%; object-fit: contain;
@@ -3396,6 +3438,7 @@ html[data-theme="dark"] .stress-badge { background:rgba(75,158,255,.15); color:#
   <button class="btn btn-t" onclick="abrirAdminDispositivos()">&#x2699;&#xFE0F; Inspector de Dispositivos</button>
   <button class="btn btn-t" onclick="abrirWindowsUpdate()">&#x1F6E1;&#xFE0F; Windows al D&iacute;a</button>
   <button class="btn btn-t" onclick="abrirModalTestEstres()">&#x1F525; Test de Estr&eacute;s</button>
+  <button class="btn btn-t" onclick="abrirModalAntivirus()">&#x1F6E1;&#xFE0F; Antivirus</button>
 </div>
 <img id="mascotMain" style="display:none" src="" alt="">
 <div id="emptyState" style="display:none"></div>
@@ -3934,6 +3977,46 @@ html[data-theme="dark"] .stress-badge { background:rgba(75,158,255,.15); color:#
     </div>
 
     <div class="stress-toast" id="stressToast"></div>
+  </div>
+</div>
+
+<div id="antivirusModal" class="modal-ov" style="z-index:1000" onclick="cerrarModalAntivirusOv(event)">
+  <div class="chk-modal-card" style="max-width:500px;pointer-events:auto;z-index:1001">
+    <button class="modal-x" onclick="cerrarModalAntivirus()">&#x2715;</button>
+    <div style="font-size:16px;font-weight:700;margin-bottom:4px;color:var(--txt)">&#x1F6E1;&#xFE0F; Herramientas Antivirus</div>
+    <div style="font-size:12px;color:var(--txt2);margin-bottom:16px">Escane&aacute; y elimin&aacute; malware del sistema</div>
+
+    <div class="stress-card">
+      <div class="stress-card-hdr">
+        <div class="stress-icon">&#x1F9F9;</div>
+        <div class="stress-info">
+          <div class="stress-name">AdwCleaner</div>
+          <div class="stress-desc">Elimina adware, spyware y programas no deseados</div>
+        </div>
+        <span class="stress-badge">Adware &middot; PUP</span>
+      </div>
+      <div class="stress-card-ftr">
+        <div class="stress-hint" id="avHint_adwcleaner">Coloc&aacute; el ejecutable en tools&#92;antivirus&#92;</div>
+        <button class="stress-btn" id="avBtn_adwcleaner" onclick="lanzarAntivirus('adwcleaner')" disabled>Verificando&hellip;</button>
+      </div>
+    </div>
+
+    <div class="stress-card">
+      <div class="stress-card-hdr">
+        <div class="stress-icon">&#x1F6E1;&#xFE0F;</div>
+        <div class="stress-info">
+          <div class="stress-name">Malwarebytes</div>
+          <div class="stress-desc">Detecta y elimina malware, ransomware y virus</div>
+        </div>
+        <span class="stress-badge">Malware &middot; Ransomware</span>
+      </div>
+      <div class="stress-card-ftr">
+        <div class="stress-hint" id="avHint_malwarebytes">Coloc&aacute; el ejecutable en tools&#92;antivirus&#92;</div>
+        <button class="stress-btn" id="avBtn_malwarebytes" onclick="lanzarAntivirus('malwarebytes')" disabled>Verificando&hellip;</button>
+      </div>
+    </div>
+
+    <div class="stress-toast" id="avToast"></div>
   </div>
 </div>
 
@@ -5925,6 +6008,82 @@ function lanzarHerramienta(tool) {
   }).catch(function(err) {
     _stressToast(false, '⚠️ Error inesperado: ' + err);
     _stressSetBtn(tool, 'ok');
+  });
+}
+
+// ── Antivirus modal ────────────────────────────────────────────────────────
+var _avNombres = {adwcleaner: 'AdwCleaner', malwarebytes: 'Malwarebytes'};
+var _avDisponibles = {};
+var _avToastTmr = null;
+
+function _avSetBtn(tool, estado) {
+  var btn  = document.getElementById('avBtn_' + tool);
+  var hint = document.getElementById('avHint_' + tool);
+  if (estado === 'ok') {
+    btn.disabled = false; btn.textContent = '▶ Lanzar';
+    hint.style.display = 'none';
+  } else if (estado === 'missing') {
+    btn.disabled = true; btn.textContent = 'No encontrado';
+    hint.style.display = 'block';
+  } else {
+    btn.disabled = true; btn.textContent = 'Verificando…';
+    hint.style.display = 'none';
+  }
+}
+
+function _avToast(ok, msg) {
+  var el = document.getElementById('avToast');
+  el.className = 'stress-toast ' + (ok ? 'ok' : 'err');
+  el.textContent = msg;
+  el.style.display = 'block';
+  if (_avToastTmr) clearTimeout(_avToastTmr);
+  _avToastTmr = setTimeout(function() { el.style.display = 'none'; _avToastTmr = null; }, 4000);
+}
+
+function abrirModalAntivirus() {
+  _avDisponibles = {};
+  Object.keys(_avNombres).forEach(function(t) { _avSetBtn(t, 'checking'); });
+  document.getElementById('avToast').style.display = 'none';
+  document.getElementById('antivirusModal').classList.add('open');
+  if (!window.pywebview || !window.pywebview.api) return;
+  window.pywebview.api.check_antivirus_tools().then(function(raw) {
+    var d = JSON.parse(raw);
+    if (d.error) {
+      Object.keys(_avNombres).forEach(function(t) { _avSetBtn(t, 'missing'); });
+      _avToast(false, '⚠️ Error: ' + d.error);
+      return;
+    }
+    _avDisponibles = d;
+    Object.keys(_avNombres).forEach(function(t) { _avSetBtn(t, d[t] ? 'ok' : 'missing'); });
+  }).catch(function() {
+    Object.keys(_avNombres).forEach(function(t) { _avSetBtn(t, 'missing'); });
+    _avToast(false, '⚠️ No se pudo verificar la carpeta tools\\\\antivirus');
+  });
+}
+
+function cerrarModalAntivirus() {
+  document.getElementById('antivirusModal').classList.remove('open');
+  if (_avToastTmr) { clearTimeout(_avToastTmr); _avToastTmr = null; }
+  document.getElementById('avToast').style.display = 'none';
+}
+
+function cerrarModalAntivirusOv(e) {
+  if (e.target === document.getElementById('antivirusModal')) cerrarModalAntivirus();
+}
+
+function lanzarAntivirus(tool) {
+  if (!_avDisponibles[tool]) return;
+  var btn = document.getElementById('avBtn_' + tool);
+  var nombre = _avNombres[tool] || tool;
+  btn.disabled = true; btn.textContent = 'Lanzando…';
+  window.pywebview.api.launch_antivirus_tool(tool).then(function(raw) {
+    var d = JSON.parse(raw);
+    if (d.error) _avToast(false, '⚠️ ' + d.error);
+    else _avToast(true, '✅ Lanzando ' + nombre + '...');
+    _avSetBtn(tool, 'ok');
+  }).catch(function(err) {
+    _avToast(false, '⚠️ Error inesperado: ' + err);
+    _avSetBtn(tool, 'ok');
   });
 }
 
