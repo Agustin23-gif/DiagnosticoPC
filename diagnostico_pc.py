@@ -2742,6 +2742,122 @@ class Api:
         except Exception as e:
             return json.dumps({"error": str(e)})
 
+    # ── Modo Red ───────────────────────────────────────────────────────
+    # Barrido /24 en Python puro: ping en paralelo + tabla ARP (atrapa equipos
+    # que bloquean ICMP, típico de celulares y Windows con firewall).
+    _NET_SCAN_LOCK = threading.Lock()
+    _MOBILE_HINTS  = ("android", "iphone", "ipad", "galaxy", "redmi", "xiaomi",
+                      "huawei", "motorola", "moto-", "oppo", "vivo", "realme", "phone")
+
+    @staticmethod
+    def _local_ip():
+        # Misma técnica que get_net_info: la IP de la interfaz con ruta a internet.
+        # gethostbyname(hostname) suele devolver adaptadores virtuales/VPN.
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.settimeout(2)
+            s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]
+            s.close()
+            return ip
+        except Exception:
+            return socket.gethostbyname(socket.gethostname())
+
+    @staticmethod
+    def _arp_table(prefix):
+        """{ip: mac} de la caché ARP para la red prefix.X (sin broadcast/multicast)."""
+        import re
+        table = {}
+        try:
+            r = subprocess.run(["arp", "-a"], capture_output=True, text=True,
+                               timeout=5, errors="replace", **_NWIN)
+            for ip, mac in re.findall(
+                    r"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\s+([0-9a-fA-F]{2}(?:-[0-9a-fA-F]{2}){5})",
+                    r.stdout):
+                mac = mac.lower()
+                last = ip.rsplit(".", 1)[-1]
+                if (ip.startswith(prefix + ".") and last not in ("0", "255")
+                        and mac != "ff-ff-ff-ff-ff-ff" and not mac.startswith("01-00-5e")):
+                    table[ip] = mac
+        except Exception:
+            pass
+        return table
+
+    def scan_network(self):
+        try:
+            import concurrent.futures
+            with Api._NET_SCAN_LOCK:
+                local_ip = Api._local_ip()
+                prefix   = ".".join(local_ip.split(".")[:3])
+
+                gateway = ""
+                try:
+                    gw = subprocess.run(
+                        ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                         "(Get-NetRoute -DestinationPrefix '0.0.0.0/0' | "
+                         "Sort-Object RouteMetric | Select-Object -First 1).NextHop"],
+                        capture_output=True, text=True, timeout=8, **_NWIN,
+                    )
+                    if gw.returncode == 0:
+                        gateway = gw.stdout.strip()
+                except Exception:
+                    pass
+
+                def ping_host(ip):
+                    # ping devuelve 0 también con "Host de destino inaccesible"
+                    # (respuesta del router): solo cuenta si hubo eco real (TTL=)
+                    try:
+                        r = subprocess.run(["ping", "-n", "1", "-w", "500", ip],
+                                           capture_output=True, text=True, timeout=3,
+                                           errors="replace", **_NWIN)
+                        return ip if "TTL=" in r.stdout.upper() else None
+                    except Exception:
+                        return None
+
+                ips = [f"{prefix}.{i}" for i in range(1, 255)]
+                with concurrent.futures.ThreadPoolExecutor(max_workers=50) as ex:
+                    alive = {ip for ip in ex.map(ping_host, ips) if ip}
+
+                # El barrido llenó la caché ARP: suma los que no respondieron ping
+                arp   = Api._arp_table(prefix)
+                alive |= set(arp)
+                alive.add(local_ip)
+
+                def resolve(ip):
+                    try:
+                        return socket.gethostbyaddr(ip)[0]
+                    except Exception:
+                        return ""
+
+                alive = sorted(alive, key=lambda x: int(x.rsplit(".", 1)[-1]))
+                with concurrent.futures.ThreadPoolExecutor(max_workers=50) as ex:
+                    names = list(ex.map(resolve, alive))
+
+                devices = []
+                for ip, name in zip(alive, names):
+                    mac = arp.get(ip, "")
+                    # MAC "localmente administrada" (2º dígito 2/6/A/E) = MAC aleatoria
+                    # de privacidad, la usan por defecto iOS y Android
+                    random_mac = len(mac) > 1 and mac[1] in "26ae"
+                    if ip == gateway:
+                        dtype = "router"
+                    elif random_mac or any(h in name.lower() for h in Api._MOBILE_HINTS):
+                        dtype = "movil"
+                    else:
+                        dtype = "pc"
+                    devices.append({"ip": ip, "name": name, "mac": mac,
+                                    "type": dtype, "online": True})
+
+                return json.dumps({
+                    "local_ip": local_ip,
+                    "gateway":  gateway,
+                    "network":  f"{prefix}.0/24",
+                    "devices":  devices,
+                    "total":    len(devices),
+                })
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
 
 # ── HTML UI ───────────────────────────────────────────────────────────────
 HTML = """<!DOCTYPE html>
@@ -3447,6 +3563,24 @@ html[data-theme="dark"] .stress-badge { background:rgba(75,158,255,.15); color:#
 .hist-metrics { flex:1; min-width:0; font-size:12px; font-family:var(--font-mono); opacity:.9; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .hist-del-btn { flex-shrink:0; background:transparent; border:1px solid rgba(255,255,255,.25); border-radius:8px; padding:3px 8px; font-size:13px; cursor:pointer; transition:background .15s; }
 .hist-del-btn:hover { background:rgba(239,68,68,.30); }
+/* ── Modo Red modal ── */
+.red-summary { font-size:15px; font-weight:700; color:var(--txt); margin-bottom:12px; }
+.red-list { max-height:300px; overflow-y:auto; padding-right:4px; margin-bottom:14px; }
+.red-card { display:flex; align-items:center; gap:12px; background:var(--surface-card); border:1px solid var(--border-card); border-radius:10px; padding:10px 14px; margin-bottom:6px; }
+html[data-theme="dark"] .red-card { background:#080E1C; border-color:#1A2540; }
+.red-icon { font-size:22px; line-height:1; flex-shrink:0; }
+.red-info { flex:1; min-width:0; }
+.red-name { font-size:13px; font-weight:600; color:var(--txt); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.red-name.unnamed { font-style:italic; color:var(--txt2); font-weight:500; }
+.red-ip { font-size:11.5px; font-family:var(--font-mono); color:var(--txt2); margin-top:1px; }
+.red-badges { display:flex; gap:5px; flex-shrink:0; }
+.red-badge { font-size:10px; font-weight:700; letter-spacing:.04em; padding:3px 9px; border-radius:999px; white-space:nowrap; }
+.red-badge.online { background:rgba(34,197,94,.12); color:#15803D; }
+.red-badge.me     { background:rgba(26,86,196,.12); color:#1A56C4; }
+.red-badge.gw     { background:rgba(107,114,128,.12); color:#4B5563; }
+html[data-theme="dark"] .red-badge.online { background:rgba(34,197,94,.15); color:#22C55E; }
+html[data-theme="dark"] .red-badge.me     { background:rgba(75,158,255,.15); color:#4B9EFF; }
+html[data-theme="dark"] .red-badge.gw     { background:rgba(255,255,255,.08); color:#9CA3AF; }
 .hist-empty { text-align:center; background:rgba(255,255,255,0.15); border:1px solid rgba(255,255,255,0.25); border-radius:10px; padding:16px 14px; color:white; font-size:13px; line-height:1.6; }
 </style>
 </head>
@@ -3563,6 +3697,7 @@ html[data-theme="dark"] .stress-badge { background:rgba(75,158,255,.15); color:#
   <button class="btn btn-t" onclick="abrirWindowsUpdate()">&#x1F6E1;&#xFE0F; Windows al D&iacute;a</button>
   <button class="btn btn-t" onclick="abrirModalTestEstres()">&#x1F525; Test de Estr&eacute;s</button>
   <button class="btn btn-t" onclick="abrirModalAntivirus()">&#x1F6E1;&#xFE0F; Antivirus</button>
+  <button class="btn btn-t" onclick="abrirModalModoRed()">&#x1F310; Modo Red</button>
 </div>
 
 <div class="section-label hist-hdr">
@@ -4153,6 +4288,38 @@ html[data-theme="dark"] .stress-badge { background:rgba(75,158,255,.15); color:#
     </div>
 
     <div class="stress-toast" id="avToast"></div>
+  </div>
+</div>
+
+<div id="modoRedModal" class="modal-ov" style="z-index:1000" onclick="cerrarModalModoRedOv(event)">
+  <div class="chk-modal-card" style="max-width:500px;pointer-events:auto;z-index:1001">
+    <button class="modal-x" onclick="cerrarModalModoRed()">&#x2715;</button>
+    <div style="font-size:16px;font-weight:700;margin-bottom:4px;color:var(--txt)">&#x1F310; Modo Red</div>
+    <div style="font-size:12px;color:var(--txt2);margin-bottom:16px">Equipos conectados en la red local</div>
+
+    <!-- Escaneando (visible al abrir) -->
+    <div id="redScanSection">
+      <div style="text-align:center;padding:32px 0">
+        <div style="width:40px;height:40px;border:3px solid var(--bar-track);border-top-color:var(--brand);border-radius:50%;animation:spin .8s linear infinite;margin:0 auto 14px"></div>
+        <div style="font-size:14px;font-weight:600;color:var(--txt)">Escaneando red local&hellip;</div>
+        <div style="font-size:11px;color:var(--txt2);margin-top:4px">Esto puede tardar unos segundos&hellip;</div>
+      </div>
+    </div>
+
+    <!-- Resultado (oculto al inicio) -->
+    <div id="redResultSection" style="display:none">
+      <div class="red-summary" id="redSummary"></div>
+      <div class="net-info-grid">
+        <div class="net-info-item"><div class="net-info-lbl">Gateway</div><div class="net-info-val" id="redGateway">&hellip;</div></div>
+        <div class="net-info-item"><div class="net-info-lbl">Red</div><div class="net-info-val" id="redNetwork">&hellip;</div></div>
+      </div>
+      <div class="red-list" id="redList"></div>
+    </div>
+
+    <!-- Error (oculto al inicio) -->
+    <div id="redErrorSection" style="display:none"></div>
+
+    <button class="btn btn-s" id="btnRedRescan" style="width:100%;padding:10px;border-radius:10px" onclick="escanearRed()" disabled>&#x1F504; Escanear de nuevo</button>
   </div>
 </div>
 
@@ -6307,6 +6474,90 @@ function confirmarLimpiarHistorial() {
 }
 
 window.addEventListener('pywebviewready', function() { cargarHistorial(); });
+
+// ── Modo Red modal ─────────────────────────────────────────────────────────
+// Cada escaneo lleva un número: si se cierra/reabre el modal mientras uno
+// sigue corriendo, su respuesta vieja se descarta.
+var _redScanId = 0;
+var _redEscaneando = false;
+
+function _redMostrar(seccion) {
+  ['redScanSection','redResultSection','redErrorSection'].forEach(function(id) {
+    document.getElementById(id).style.display = (id === seccion) ? 'block' : 'none';
+  });
+}
+
+function abrirModalModoRed() {
+  document.getElementById('modoRedModal').classList.add('open');
+  escanearRed();
+}
+
+function cerrarModalModoRed() {
+  document.getElementById('modoRedModal').classList.remove('open');
+  _redScanId++;
+  _redEscaneando = false;
+  document.getElementById('redList').innerHTML = '';
+  _redMostrar('redScanSection');
+  document.getElementById('btnRedRescan').disabled = true;
+}
+
+function cerrarModalModoRedOv(e) {
+  if (e.target === document.getElementById('modoRedModal')) cerrarModalModoRed();
+}
+
+function escanearRed() {
+  if (_redEscaneando) return;
+  if (!window.pywebview || !window.pywebview.api) return;
+  _redEscaneando = true;
+  var miId = ++_redScanId;
+  _redMostrar('redScanSection');
+  document.getElementById('btnRedRescan').disabled = true;
+  window.pywebview.api.scan_network().then(function(raw) {
+    if (miId !== _redScanId) return;
+    _redEscaneando = false;
+    document.getElementById('btnRedRescan').disabled = false;
+    var d = JSON.parse(raw);
+    if (d.error) {
+      document.getElementById('redErrorSection').innerHTML =
+        '<div class="thermo-unavail">&#x26A0;&#xFE0F; Error al escanear la red: ' + _escHtml(d.error) + '</div>';
+      _redMostrar('redErrorSection');
+      return;
+    }
+    renderizarRed(d);
+  }).catch(function(err) {
+    if (miId !== _redScanId) return;
+    _redEscaneando = false;
+    document.getElementById('btnRedRescan').disabled = false;
+    document.getElementById('redErrorSection').innerHTML =
+      '<div class="thermo-unavail">&#x26A0;&#xFE0F; Error inesperado: ' + _escHtml(err) + '</div>';
+    _redMostrar('redErrorSection');
+  });
+}
+
+function renderizarRed(data) {
+  var devs = data.devices || [];
+  var total = devs.length;
+  document.getElementById('redSummary').textContent =
+    total + (total === 1 ? ' equipo encontrado en la red' : ' equipos encontrados en la red');
+  document.getElementById('redGateway').textContent = data.gateway || 'No detectado';
+  document.getElementById('redNetwork').textContent = data.network || '—';
+  var iconos = {pc: '&#x1F5A5;&#xFE0F;', movil: '&#x1F4F1;', router: '&#x1F4E1;'};
+  document.getElementById('redList').innerHTML = devs.map(function(dv) {
+    var esYo = dv.ip === data.local_ip;
+    var nombre = dv.name
+      ? '<div class="red-name">' + _escHtml(dv.name) + '</div>'
+      : '<div class="red-name unnamed">Sin nombre</div>';
+    var badges = (esYo ? '<span class="red-badge me">&#x2B50; Este equipo</span>' : '')
+      + (dv.type === 'router' ? '<span class="red-badge gw">Gateway</span>' : '')
+      + '<span class="red-badge online">ONLINE</span>';
+    return '<div class="red-card">'
+      + '<div class="red-icon">' + (iconos[dv.type] || iconos.pc) + '</div>'
+      + '<div class="red-info">' + nombre + '<div class="red-ip">' + _escHtml(dv.ip) + '</div></div>'
+      + '<div class="red-badges">' + badges + '</div>'
+      + '</div>';
+  }).join('');
+  _redMostrar('redResultSection');
+}
 
 window.addEventListener('resize', () => { _drawCPUFrame(_cpuDisp); drawRAM(_lastRamPct); });
 </script>
