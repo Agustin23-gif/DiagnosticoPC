@@ -2979,6 +2979,121 @@ class Api:
         except Exception as e:
             return json.dumps({"error": str(e)})
 
+    # ── Tema claro/oscuro ──────────────────────────────────────────────
+    # Va en config.json (mismo archivo que la API key, se conserva el resto):
+    # el localStorage de la ventana no sobrevive entre ejecuciones.
+    def save_theme(self, theme):
+        try:
+            if theme not in ("dark", "light"):
+                return json.dumps({"error": "Tema inválido"})
+            config = self._leer_config()
+            config["theme"] = theme
+            with open(self._config_path(), "w", encoding="utf-8") as f:
+                json.dump(config, f, indent=2)
+            return json.dumps({"status": "ok"})
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
+    def get_theme(self):
+        theme = self._leer_config().get("theme", "light")
+        return json.dumps({"theme": theme if theme in ("dark", "light") else "light"})
+
+    # ── Información de Pantallas ───────────────────────────────────────
+    # Se enumeran los monitores conectados (EnumDisplayDevices), no las
+    # placas de video: dos monitores en la misma GPU son dos cards.
+    # EnumDisplaySettings devuelve el modo real aunque haya escalado DPI.
+    def get_displays_info(self):
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            class DISPLAY_DEVICEW(ctypes.Structure):
+                _fields_ = [("cb", wintypes.DWORD),
+                            ("DeviceName", wintypes.WCHAR * 32),
+                            ("DeviceString", wintypes.WCHAR * 128),
+                            ("StateFlags", wintypes.DWORD),
+                            ("DeviceID", wintypes.WCHAR * 128),
+                            ("DeviceKey", wintypes.WCHAR * 128)]
+
+            class DEVMODEW(ctypes.Structure):
+                _fields_ = [("dmDeviceName", wintypes.WCHAR * 32),
+                            ("dmSpecVersion", wintypes.WORD),
+                            ("dmDriverVersion", wintypes.WORD),
+                            ("dmSize", wintypes.WORD),
+                            ("dmDriverExtra", wintypes.WORD),
+                            ("dmFields", wintypes.DWORD),
+                            ("dmPositionX", wintypes.LONG),
+                            ("dmPositionY", wintypes.LONG),
+                            ("dmDisplayOrientation", wintypes.DWORD),
+                            ("dmDisplayFixedOutput", wintypes.DWORD),
+                            ("dmColor", ctypes.c_short),
+                            ("dmDuplex", ctypes.c_short),
+                            ("dmYResolution", ctypes.c_short),
+                            ("dmTTOption", ctypes.c_short),
+                            ("dmCollate", ctypes.c_short),
+                            ("dmFormName", wintypes.WCHAR * 32),
+                            ("dmLogPixels", wintypes.WORD),
+                            ("dmBitsPerPel", wintypes.DWORD),
+                            ("dmPelsWidth", wintypes.DWORD),
+                            ("dmPelsHeight", wintypes.DWORD),
+                            ("dmDisplayFlags", wintypes.DWORD),
+                            ("dmDisplayFrequency", wintypes.DWORD),
+                            ("dmReserved", wintypes.DWORD * 8)]
+
+            ATTACHED, PRIMARY = 0x1, 0x4
+            ENUM_CURRENT_SETTINGS = wintypes.DWORD(0xFFFFFFFF)
+            user32 = ctypes.windll.user32
+
+            # VRAM por adaptador (AdapterRAM es uint32: tope 4 GB, igual que en ADN)
+            vram = {}
+            try:
+                r = subprocess.run(
+                    ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                     "Get-CimInstance -ClassName Win32_VideoController | "
+                     "Select-Object Name, AdapterRAM | ConvertTo-Json -Compress"],
+                    capture_output=True, text=True, timeout=10, errors="replace", **_NWIN,
+                )
+                if r.returncode == 0 and r.stdout.strip():
+                    raw = json.loads(r.stdout.strip())
+                    for item in ([raw] if isinstance(raw, dict) else raw):
+                        ram = int(item.get("AdapterRAM") or 0)
+                        vram[str(item.get("Name") or "").strip()] = round(ram / 1073741824, 1) if ram > 0 else 0
+            except Exception:
+                pass
+
+            displays = []
+            i = 0
+            while True:
+                dev = DISPLAY_DEVICEW()
+                dev.cb = ctypes.sizeof(dev)
+                if not user32.EnumDisplayDevicesW(None, i, ctypes.byref(dev), 0):
+                    break
+                i += 1
+                if not dev.StateFlags & ATTACHED:
+                    continue
+                mode = DEVMODEW()
+                mode.dmSize = ctypes.sizeof(mode)
+                if not user32.EnumDisplaySettingsW(dev.DeviceName, ENUM_CURRENT_SETTINGS, ctypes.byref(mode)):
+                    continue
+                adapter = dev.DeviceString.strip() or "Adaptador desconocido"
+                displays.append({
+                    "name":    adapter,
+                    "width":   mode.dmPelsWidth,
+                    "height":  mode.dmPelsHeight,
+                    "refresh": mode.dmDisplayFrequency,
+                    "bpp":     mode.dmBitsPerPel,
+                    "vram_gb": vram.get(adapter, 0),
+                    "primary": bool(dev.StateFlags & PRIMARY),
+                })
+
+            # Principal primero; el resto en el orden de Windows
+            displays.sort(key=lambda d: not d["primary"])
+            for n, d in enumerate(displays, 1):
+                d["index"] = n
+            return json.dumps(displays)
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
     def _collect_diagnostic_snapshot(self):
         """Mismos datos y mismas reglas que generate_visual_report / el historial,
         pero sin generar el JPG."""
@@ -3887,6 +4002,21 @@ html[data-theme="dark"] .ia-box { background:rgba(75,158,255,.06); border-color:
 .ia-meta { font-size:11px; color:var(--txt2); margin-bottom:8px; }
 .ia-small { font-size:11px; color:var(--txt2); margin-top:8px; }
 .ia-err-detail { font-size:11.5px; color:var(--txt2); margin-top:6px; word-break:break-word; }
+/* ── Pantallas modal ── */
+.disp-list { max-height:380px; overflow-y:auto; padding-right:4px; }
+.disp-card { background:var(--surface-card); border:1px solid var(--border-card); border-radius:12px; padding:16px; margin-bottom:10px; }
+html[data-theme="dark"] .disp-card { background:#080E1C; border-color:#1A2540; }
+.disp-hdr { display:flex; align-items:center; gap:12px; margin-bottom:12px; }
+.disp-ic { font-size:26px; line-height:1; flex-shrink:0; }
+.disp-info { flex:1; min-width:0; }
+.disp-title { font-size:14px; font-weight:700; color:var(--txt); }
+.disp-adapter { font-size:12px; color:var(--txt2); margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.disp-badge { font-size:11px; font-weight:600; padding:3px 10px; border-radius:999px; white-space:nowrap; flex-shrink:0; }
+.disp-badge.primary   { background:rgba(26,86,196,.12); color:#1A56C4; }
+.disp-badge.secondary { background:rgba(107,114,128,.12); color:#4B5563; }
+html[data-theme="dark"] .disp-badge.primary   { background:rgba(75,158,255,.15); color:#4B9EFF; }
+html[data-theme="dark"] .disp-badge.secondary { background:rgba(255,255,255,.08); color:#9CA3AF; }
+.disp-grid { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
 .hist-empty { text-align:center; background:rgba(255,255,255,0.15); border:1px solid rgba(255,255,255,0.25); border-radius:10px; padding:16px 14px; color:white; font-size:13px; line-height:1.6; }
 </style>
 </head>
@@ -4005,6 +4135,7 @@ html[data-theme="dark"] .ia-box { background:rgba(75,158,255,.06); border-color:
   <button class="btn btn-t" onclick="abrirModalAntivirus()">&#x1F6E1;&#xFE0F; Antivirus</button>
   <button class="btn btn-t" onclick="abrirModalModoRed()">&#x1F310; Modo Red</button>
   <button class="btn btn-t" onclick="abrirModalResumenIA()">&#x1F916; Resumen IA</button>
+  <button class="btn btn-t" onclick="abrirModalPantallas()">&#x1F5A5;&#xFE0F; Pantallas</button>
 </div>
 
 <div class="section-label hist-hdr">
@@ -4704,6 +4835,30 @@ html[data-theme="dark"] .ia-box { background:rgba(75,158,255,.06); border-color:
         <button class="btn btn-s" style="padding:9px 18px" onclick="generarResumenIA()">&#x1F504; Reintentar</button>
       </div>
     </div>
+  </div>
+</div>
+
+<div id="pantallasModal" class="modal-ov" style="z-index:1000" onclick="cerrarModalPantallasOv(event)">
+  <div class="chk-modal-card" style="max-width:500px;pointer-events:auto;z-index:1001">
+    <button class="modal-x" onclick="cerrarModalPantallas()">&#x2715;</button>
+    <div style="font-size:16px;font-weight:700;margin-bottom:4px;color:var(--txt)">&#x1F5A5;&#xFE0F; Informaci&oacute;n de Pantallas</div>
+    <div style="font-size:12px;color:var(--txt2);margin-bottom:16px">Monitores y configuraci&oacute;n de pantalla</div>
+
+    <!-- Detectando (visible al abrir) -->
+    <div id="dispLoadingSection">
+      <div style="text-align:center;padding:32px 0">
+        <div style="width:40px;height:40px;border:3px solid var(--bar-track);border-top-color:var(--brand);border-radius:50%;animation:spin .8s linear infinite;margin:0 auto 14px"></div>
+        <div style="font-size:14px;font-weight:600;color:var(--txt)">Detectando pantallas&hellip;</div>
+      </div>
+    </div>
+
+    <!-- Resultado (oculto al inicio) -->
+    <div id="dispResultSection" style="display:none">
+      <div class="disp-list" id="dispList"></div>
+    </div>
+
+    <!-- Error (oculto al inicio) -->
+    <div id="dispErrorSection" style="display:none"></div>
   </div>
 </div>
 
@@ -7169,6 +7324,100 @@ function resumenIAAuto(res) {
   if (res.status === 'ok') _iaMostrarResultado(res.summary, 'Resumen del reporte reci\xE9n generado');
   else _iaMostrarError(res);
 }
+
+// ── Información de Pantallas modal ─────────────────────────────────────────
+// Igual que Modo Red: si se cierra el modal con una detección en curso, su
+// respuesta vieja se descarta.
+var _dispReqId = 0;
+
+function _dispMostrar(seccion) {
+  ['dispLoadingSection','dispResultSection','dispErrorSection'].forEach(function(id) {
+    document.getElementById(id).style.display = (id === seccion) ? 'block' : 'none';
+  });
+}
+
+function _dispDato(lbl, val) {
+  return `<div class="net-info-item"><div class="net-info-lbl">${lbl}</div><div class="net-info-val">${val}</div></div>`;
+}
+
+function renderizarPantallas(lista) {
+  var el = document.getElementById('dispList');
+  if (!lista.length) {
+    el.innerHTML = '<div class="thermo-unavail">No se detectaron pantallas conectadas.</div>';
+    return;
+  }
+  el.innerHTML = lista.map(function(d) {
+    var badge = d.primary
+      ? '<span class="disp-badge primary">&#x2B50; Principal</span>'
+      : '<span class="disp-badge secondary">Secundario</span>';
+    var vram = d.vram_gb ? d.vram_gb.toFixed(1) + ' GB' : 'Compartida';
+    return '<div class="disp-card">'
+      + '<div class="disp-hdr">'
+      +   '<div class="disp-ic">&#x1F5A5;&#xFE0F;</div>'
+      +   '<div class="disp-info">'
+      +     '<div class="disp-title">Monitor ' + d.index + '</div>'
+      +     '<div class="disp-adapter" title="' + _escHtml(d.name) + '">' + _escHtml(d.name) + '</div>'
+      +   '</div>'
+      +   badge
+      + '</div>'
+      + '<div class="disp-grid">'
+      +   _dispDato('Resoluci&oacute;n', (d.width && d.height) ? d.width + ' x ' + d.height : '&mdash;')
+      +   _dispDato('Frecuencia', d.refresh > 1 ? d.refresh + ' Hz' : '&mdash;')
+      +   _dispDato('Color', d.bpp ? d.bpp + ' bits' : '&mdash;')
+      +   _dispDato('VRAM', vram)
+      + '</div>'
+      + '</div>';
+  }).join('');
+}
+
+function abrirModalPantallas() {
+  document.getElementById('pantallasModal').classList.add('open');
+  _dispMostrar('dispLoadingSection');
+  if (!window.pywebview || !window.pywebview.api) return;
+  var miId = ++_dispReqId;
+  window.pywebview.api.get_displays_info().then(function(raw) {
+    if (miId !== _dispReqId) return;
+    var d = JSON.parse(raw);
+    if (d.error) {
+      document.getElementById('dispErrorSection').innerHTML =
+        '<div class="thermo-unavail">&#x26A0;&#xFE0F; Error al detectar pantallas: ' + _escHtml(d.error) + '</div>';
+      _dispMostrar('dispErrorSection');
+      return;
+    }
+    renderizarPantallas(Array.isArray(d) ? d : []);
+    _dispMostrar('dispResultSection');
+  }).catch(function(err) {
+    if (miId !== _dispReqId) return;
+    document.getElementById('dispErrorSection').innerHTML =
+      '<div class="thermo-unavail">&#x26A0;&#xFE0F; Error inesperado: ' + _escHtml(err) + '</div>';
+    _dispMostrar('dispErrorSection');
+  });
+}
+
+function cerrarModalPantallas() {
+  document.getElementById('pantallasModal').classList.remove('open');
+  _dispReqId++;
+}
+
+function cerrarModalPantallasOv(e) {
+  if (e.target === document.getElementById('pantallasModal')) cerrarModalPantallas();
+}
+
+// ── Tema guardado en config.json ───────────────────────────────────────────
+// Al iniciar se aplica con el mismo toggleTheme() del botón (solo si difiere).
+// Para guardar no se toca toggleTheme: se observa el atributo data-theme, así
+// cualquier cambio de tema queda persistido.
+window.addEventListener('pywebviewready', function() {
+  window.pywebview.api.get_theme().then(function(raw) {
+    var d = JSON.parse(raw);
+    if (d.theme !== document.documentElement.getAttribute('data-theme')) toggleTheme();
+  }).catch(function() {});
+});
+
+new MutationObserver(function() {
+  if (!window.pywebview || !window.pywebview.api) return;
+  window.pywebview.api.save_theme(document.documentElement.getAttribute('data-theme')).catch(function() {});
+}).observe(document.documentElement, {attributes: true, attributeFilter: ['data-theme']});
 
 window.addEventListener('resize', () => { _drawCPUFrame(_cpuDisp); drawRAM(_lastRamPct); });
 </script>
