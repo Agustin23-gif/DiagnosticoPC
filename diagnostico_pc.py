@@ -2592,6 +2592,55 @@ class Api:
         except Exception as e:
             return json.dumps({"error": str(e)})
 
+    def add_printer_by_ip(self, ip, name):
+        try:
+            # Validar IP básica
+            ip = str(ip or "").strip()
+            parts = ip.split(".")
+            if len(parts) != 4 or not all(p.isdigit() and int(p) <= 255 for p in parts):
+                return json.dumps({"error": "IP inválida"})
+
+            name = str(name or "").strip()
+            if not name:
+                return json.dumps({"error": "El nombre no puede estar vacío"})
+
+            # Ni Add-PrinterPort ni Add-Printer contactan al equipo: sin esta
+            # prueba se "agregaría" una impresora apagada o una IP inexistente.
+            # 9100 = puerto RAW/JetDirect, el estándar de impresoras de red.
+            try:
+                socket.create_connection((ip, 9100), timeout=3).close()
+            except OSError:
+                return json.dumps({"error": "sin_conexion"})
+
+            # Puerto TCP/IP (si ya existe, Add-PrinterPort falla en silencio y se reutiliza)
+            port_name = Api._ps_literal(f"IP_{ip.replace('.', '_')}")
+            add_port_cmd = (
+                f"Add-PrinterPort -Name {port_name} "
+                f"-PrinterHostAddress {Api._ps_literal(ip)} -ErrorAction SilentlyContinue; "
+            )
+
+            def _add_printer(driver):
+                return subprocess.run(
+                    ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                     add_port_cmd
+                     + f"Add-Printer -Name {Api._ps_literal(name)} "
+                       f"-DriverName {Api._ps_literal(driver)} "
+                       f"-PortName {port_name} -ErrorAction Stop"],
+                    capture_output=True, text=True, timeout=30, errors="replace", **_NWIN,
+                )
+
+            # Driver genérico primero; si no está instalado, el de clase IPP
+            r = _add_printer("Generic / Text Only")
+            if r.returncode == 0:
+                return json.dumps({"status": "ok"})
+            r2 = _add_printer("Microsoft IPP Class Driver")
+            if r2.returncode == 0:
+                return json.dumps({"status": "ok"})
+            err = (r2.stderr.strip().splitlines() or [""])[0].strip()
+            return json.dumps({"error": err or "Error al agregar impresora"})
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
     # ── Test de Estrés ─────────────────────────────────────────────────
     # Herramientas en tools\stress\ junto al .exe (misma base que tools\office\).
     # FurMark es portable: su carpeta FurMark_win64\ trae las dependencias.
@@ -3793,6 +3842,11 @@ html[data-theme="dark"] .stress-badge { background:rgba(75,158,255,.15); color:#
 .hist-ghost-btn { background:transparent; border:1px solid rgba(255,255,255,.35); color:rgba(255,255,255,.85); border-radius:6px; padding:2px 10px; font-family:var(--font-ui); font-size:10.5px; font-weight:600; letter-spacing:normal; text-transform:none; cursor:pointer; transition:background .15s; }
 .hist-ghost-btn:hover { background:rgba(255,255,255,.15); }
 .hist-ghost-btn.danger { border-color:rgba(239,68,68,.6); background:rgba(239,68,68,.25); color:#fff; }
+/* Ghost del Historial adaptado a la card del modal (el original es blanco para el fondo degradado) */
+.prn-ghost-btn { background:transparent; border:1px solid var(--border-card-hover); color:var(--brand); border-radius:6px; padding:2px 10px; font-family:var(--font-ui); font-size:10.5px; font-weight:600; cursor:pointer; white-space:nowrap; flex-shrink:0; transition:background .15s; }
+.prn-ghost-btn:hover { background:rgba(26,86,196,.08); }
+html[data-theme="dark"] .prn-ghost-btn { border-color:#1A2540; color:#4B9EFF; }
+html[data-theme="dark"] .prn-ghost-btn:hover { background:rgba(75,158,255,.12); }
 .hist-confirm-txt { font-size:10.5px; font-weight:600; letter-spacing:normal; text-transform:none; color:rgba(255,255,255,.85); }
 /* Zona central entre header y barra de estado: el scroll va acá, nunca en html/body */
 .main-scroll { flex:1; min-height:0; overflow-y:auto; overflow-x:hidden; }
@@ -4405,8 +4459,36 @@ html[data-theme="dark"] .ia-box { background:rgba(75,158,255,.06); border-color:
 <div id="printersModal" class="modal-ov" style="z-index:1000" onclick="cerrarModalImpresorasOv(event)">
   <div class="chk-modal-card" style="max-width:500px;pointer-events:auto;z-index:1001">
     <button class="modal-x" onclick="cerrarModalImpresoras()">&#x2715;</button>
-    <div style="font-size:16px;font-weight:700;margin-bottom:4px;color:var(--txt)">&#x1F5A8;&#xFE0F; Gestor de Impresoras</div>
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:4px;padding-right:36px">
+      <div style="font-size:16px;font-weight:700;color:var(--txt)">&#x1F5A8;&#xFE0F; Gestor de Impresoras</div>
+      <button class="prn-ghost-btn" onclick="mostrarFormAgregarImpresora()">&#x2795; Agregar por IP</button>
+    </div>
     <div style="font-size:12px;color:var(--txt2);margin-bottom:16px">Administr&aacute; las impresoras del sistema</div>
+
+    <!-- Aviso de impresora agregada (fuera de las secciones: sigue visible mientras se recarga la lista) -->
+    <div class="stress-toast ok" id="prnAddToast" style="margin:0 0 12px"></div>
+
+    <!-- Agregar impresora por IP -->
+    <div id="prnAddSection" style="display:none">
+      <div id="prnAddForm">
+        <div style="font-size:14px;font-weight:700;margin-bottom:12px;color:var(--txt)">&#x2795; Agregar impresora por IP</div>
+        <div style="font-size:11px;font-weight:600;color:var(--txt2)">IP de la impresora</div>
+        <input type="text" id="inputIPImpresora" class="bl-input" style="margin-top:4px;margin-bottom:10px" placeholder="192.168.1.100" autocomplete="off" spellcheck="false">
+        <div style="font-size:11px;font-weight:600;color:var(--txt2)">Nombre personalizado</div>
+        <input type="text" id="inputNombreImpresora" class="bl-input" style="margin-top:4px" placeholder="HP LaserJet Recepci&oacute;n" autocomplete="off" spellcheck="false">
+        <div id="prnAddErr" style="font-size:12px;color:var(--red);margin-top:8px;display:none"></div>
+        <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:14px">
+          <button class="btn-chk-confirm-no" onclick="ocultarFormAgregarImpresora()">Cancelar</button>
+          <button class="btn-wu-confirm" onclick="ejecutarAgregarImpresora()">Agregar</button>
+        </div>
+      </div>
+      <div id="prnAddProgress" style="display:none">
+        <div style="text-align:center;padding:32px 0">
+          <div style="width:40px;height:40px;border:3px solid var(--bar-track);border-top-color:var(--brand);border-radius:50%;animation:spin .8s linear infinite;margin:0 auto 14px"></div>
+          <div style="font-size:14px;font-weight:600;color:var(--txt)">Agregando impresora&hellip;</div>
+        </div>
+      </div>
+    </div>
 
     <!-- Estado 1: Lista de impresoras -->
     <div id="prnListSection">
@@ -6540,6 +6622,100 @@ function limpiarColaImpresora(nombre) {
     _prnResultado(false, 'Error inesperado: ' + err);
   });
 }
+
+// ── Agregar impresora por IP ───────────────────────────────────────────────
+// Panel propio (prnAddSection) dentro del mismo modal; _prnMostrar no lo
+// conoce, así que se oculta/muestra a mano. Cada pedido lleva un número: si se
+// cierra el modal mientras agrega, la respuesta vieja se descarta.
+var _prnAddId = 0;
+var _prnAgregando = false;
+var _prnAddToastTmr = null;
+
+function mostrarFormAgregarImpresora() {
+  if (_prnAgregando) return;
+  ['prnListSection','prnConfirmSection','prnProgressSection','prnResultSection'].forEach(function(id) {
+    document.getElementById(id).style.display = 'none';
+  });
+  document.getElementById('inputIPImpresora').value = '';
+  document.getElementById('inputNombreImpresora').value = '';
+  document.getElementById('prnAddErr').style.display = 'none';
+  document.getElementById('prnAddProgress').style.display = 'none';
+  document.getElementById('prnAddForm').style.display = 'block';
+  document.getElementById('prnAddSection').style.display = 'block';
+  document.getElementById('inputIPImpresora').focus();
+}
+
+function ocultarFormAgregarImpresora() {
+  if (_prnAgregando) return;
+  document.getElementById('prnAddSection').style.display = 'none';
+  _prnMostrar('prnListSection');
+}
+
+function _prnAddError(html) {
+  var el = document.getElementById('prnAddErr');
+  el.innerHTML = html;
+  el.style.display = 'block';
+}
+
+function _prnAddFallo(detalle) {
+  document.getElementById('prnAddProgress').style.display = 'none';
+  document.getElementById('prnAddForm').style.display = 'block';
+  _prnAddError('❌ No se pudo agregar. Verific\xE1 la IP y que la impresora est\xE9 encendida y en red.'
+    + (detalle ? `<div style="font-size:11px;color:var(--txt2);margin-top:4px;word-break:break-word">${_escHtml(detalle)}</div>` : ''));
+}
+
+function ejecutarAgregarImpresora() {
+  if (_prnAgregando) return;
+  var ip = document.getElementById('inputIPImpresora').value.trim();
+  var nombre = document.getElementById('inputNombreImpresora').value.trim();
+  document.getElementById('prnAddErr').style.display = 'none';
+  if (!ip) { _prnAddError('Ingres\xE1 la IP de la impresora.'); return; }
+  var partes = ip.split('.');
+  var ipOk = partes.length === 4 && partes.every(function(p) {
+    return /^[0-9]{1,3}$/.test(p) && Number(p) <= 255;
+  });
+  if (!ipOk) { _prnAddError('La IP debe tener 4 grupos de n\xFAmeros (ej. 192.168.1.100).'); return; }
+  if (!nombre) { _prnAddError('Ingres\xE1 un nombre para la impresora.'); return; }
+
+  _prnAgregando = true;
+  var miId = ++_prnAddId;
+  document.getElementById('prnAddForm').style.display = 'none';
+  document.getElementById('prnAddProgress').style.display = 'block';
+  window.pywebview.api.add_printer_by_ip(ip, nombre).then(function(raw) {
+    if (miId !== _prnAddId) return;
+    _prnAgregando = false;
+    var d = JSON.parse(raw);
+    if (d.error === 'sin_conexion') {
+      document.getElementById('prnAddProgress').style.display = 'none';
+      document.getElementById('prnAddForm').style.display = 'block';
+      _prnAddError('❌ No se pudo conectar a la impresora. Verific\xE1 que est\xE9 encendida y conectada a la red.');
+      return;
+    }
+    if (d.error) { _prnAddFallo(d.error); return; }
+    document.getElementById('prnAddSection').style.display = 'none';
+    var toast = document.getElementById('prnAddToast');
+    toast.textContent = '✅ Impresora agregada correctamente';
+    toast.style.display = 'block';
+    if (_prnAddToastTmr) clearTimeout(_prnAddToastTmr);
+    _prnAddToastTmr = setTimeout(function() { toast.style.display = 'none'; _prnAddToastTmr = null; }, 5000);
+    cargarImpresoras();
+  }).catch(function(err) {
+    if (miId !== _prnAddId) return;
+    _prnAgregando = false;
+    _prnAddFallo(String(err));
+  });
+}
+
+// Al cerrarse el modal (X, overlay o "Cerrar") se resetea el panel, sin tocar
+// cerrarModalImpresoras: la próxima apertura arranca en la lista.
+new MutationObserver(function() {
+  if (document.getElementById('printersModal').classList.contains('open')) return;
+  _prnAddId++;
+  _prnAgregando = false;
+  document.getElementById('prnAddSection').style.display = 'none';
+  if (_prnAddToastTmr) { clearTimeout(_prnAddToastTmr); _prnAddToastTmr = null; }
+  document.getElementById('prnAddToast').style.display = 'none';
+}).observe(document.getElementById('printersModal'), {attributes: true, attributeFilter: ['class']});
 
 // ── Íconos reales de herramientas (Test de Estrés / Antivirus) ─────────────
 // Solo reemplaza el emoji si llegó el ícono; si no, el emoji queda de fallback
