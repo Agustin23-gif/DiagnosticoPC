@@ -6207,53 +6207,8 @@ function cerrarModalADNOv(e) {
   if (e.target === document.getElementById('adnModal')) cerrarModalADN();
 }
 function buscarProducto(fabricante, modelo, esNotebook) {
-  var fab = fabricante.toLowerCase();
-  var url = '';
-  var modeloEncoded = encodeURIComponent(modelo);
-  if (esNotebook) {
-    if (fab.includes('hp') || fab.includes('hewlett')) {
-      url = 'https://support.hp.com/us-en/search/results?query=' + modeloEncoded;
-    } else if (fab.includes('dell')) {
-      url = 'https://www.dell.com/support/home/en-us?q=' + modeloEncoded;
-    } else if (fab.includes('lenovo')) {
-      url = 'https://support.lenovo.com/us/en/search?query=' + modeloEncoded;
-    } else if (fab.includes('asus')) {
-      url = 'https://www.asus.com/search/?q=' + modeloEncoded;
-    } else if (fab.includes('acer')) {
-      var modeloAcer = modelo.replace(/\\s+/g, '_');
-      url = 'https://www.acer.com/us-en/support/product-support/' + modeloAcer;
-    } else if (fab.includes('msi')) {
-      url = 'https://www.msi.com/search?keyword=' + modeloEncoded + '&cate=app_laptop';
-    } else if (fab.includes('samsung')) {
-      url = 'https://www.samsung.com/us/support/search/?searchvalue=' + modeloEncoded;
-    } else if (fab.includes('toshiba') || fab.includes('dynabook')) {
-      url = 'https://support.dynabook.com/support/viewProductDetail?q=' + modeloEncoded;
-    } else if (fab.includes('sony')) {
-      url = 'https://www.sony.com/en/support/search/?q=' + modeloEncoded;
-    } else if (fab.includes('lg')) {
-      url = 'https://www.lg.com/us/support/search?q=' + modeloEncoded;
-    } else {
-      url = 'https://www.google.com/search?q=' + encodeURIComponent(fabricante + ' ' + modelo + ' notebook p\xE1gina oficial');
-    }
-  } else {
-    if (fab.includes('asus')) {
-      url = 'https://www.asus.com/search/?q=' + modeloEncoded;
-    } else if (fab.includes('msi')) {
-      url = 'https://www.msi.com/search?keyword=' + modeloEncoded + '&cate=app_motherboard';
-    } else if (fab.includes('gigabyte') || fab.includes('giga-byte')) {
-      url = 'https://www.gigabyte.com/Search?q=' + modeloEncoded + '&sc=Motherboard';
-    } else if (fab.includes('asrock')) {
-      url = 'https://www.asrock.com/search/?q=' + modeloEncoded;
-    } else if (fab.includes('biostar')) {
-      url = 'https://www.biostar.com.tw/app/en/search.php?keyword=' + modeloEncoded;
-    } else if (fab.includes('evga')) {
-      url = 'https://www.evga.com/products/productlist.aspx?type=0&family=Motherboard&pn=' + modeloEncoded;
-    } else if (fab.includes('intel')) {
-      url = 'https://ark.intel.com/content/www/us/en/ark/search.html?_intl_lang=en&q=' + modeloEncoded;
-    } else {
-      url = 'https://www.google.com/search?q=' + encodeURIComponent(fabricante + ' ' + modelo + ' placa madre sitio oficial');
-    }
-  }
+  var query = encodeURIComponent(fabricante + " " + modelo + " drivers oficiales descargar");
+  var url = "https://www.google.com/search?q=" + query;
   window.pywebview.api.abrir_url(url);
 }
 
