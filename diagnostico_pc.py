@@ -2612,6 +2612,25 @@ class Api:
         except Exception as e:
             return json.dumps({"error": str(e)})
 
+    def get_stress_icons(self):
+        # Íconos reales de cada .exe vía _extract_icons_batch. Solo se cachea
+        # si salieron todos: si falta alguna herramienta, la próxima apertura
+        # del modal reintenta (por si la copiaron mientras tanto).
+        try:
+            cache = getattr(self, "_stress_icons", None)
+            if cache is not None:
+                return json.dumps(cache)
+            stress_path = os.path.join(self._office_base_path(), "tools", "stress")
+            icons = Api._extract_icons_batch([
+                (tool, os.path.join(stress_path, *parts))
+                for tool, parts in Api._STRESS_TOOLS.items()
+            ])
+            if len(icons) == len(Api._STRESS_TOOLS):
+                self._stress_icons = icons
+            return json.dumps(icons)
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
     def launch_stress_tool(self, tool):
         try:
             if tool not in Api._STRESS_TOOLS:
@@ -2654,6 +2673,23 @@ class Api:
                 for tool, fname in Api._ANTIVIRUS_TOOLS.items()
             }
             return json.dumps(tools)
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
+    def get_antivirus_icons(self):
+        # Mismo criterio de caché que get_stress_icons
+        try:
+            cache = getattr(self, "_antivirus_icons", None)
+            if cache is not None:
+                return json.dumps(cache)
+            antivirus_path = os.path.join(self._office_base_path(), "tools", "antivirus")
+            icons = Api._extract_icons_batch([
+                (tool, os.path.join(antivirus_path, fname))
+                for tool, fname in Api._ANTIVIRUS_TOOLS.items()
+            ])
+            if len(icons) == len(Api._ANTIVIRUS_TOOLS):
+                self._antivirus_icons = icons
+            return json.dumps(icons)
         except Exception as e:
             return json.dumps({"error": str(e)})
 
@@ -3737,7 +3773,7 @@ html[data-theme="light"] .net-sum-stat { background:rgba(255,255,255,.6); }
 .stress-card { background:var(--surface-card); border:1px solid var(--border-card); border-radius:12px; padding:16px; margin-bottom:10px; }
 html[data-theme="dark"] .stress-card { background:#080E1C; border-color:#1A2540; }
 .stress-card-hdr { display:flex; align-items:center; gap:12px; margin-bottom:12px; }
-.stress-icon { font-size:28px; line-height:1; flex-shrink:0; }
+.stress-icon { font-size:28px; line-height:1; flex-shrink:0; width:40px; height:40px; display:flex; align-items:center; justify-content:center; }
 .stress-info { flex:1; min-width:0; }
 .stress-name { font-size:14px; font-weight:700; color:var(--txt); }
 .stress-desc { font-size:12px; color:var(--txt2); margin-top:2px; }
@@ -4421,7 +4457,7 @@ html[data-theme="dark"] .ia-box { background:rgba(75,158,255,.06); border-color:
 
     <div class="stress-card">
       <div class="stress-card-hdr">
-        <div class="stress-icon">&#x2699;&#xFE0F;</div>
+        <div class="stress-icon" id="stressIcon_heavyload">&#x2699;&#xFE0F;</div>
         <div class="stress-info">
           <div class="stress-name">HeavyLoad</div>
           <div class="stress-desc">Test de estr&eacute;s de CPU y RAM</div>
@@ -4436,7 +4472,7 @@ html[data-theme="dark"] .ia-box { background:rgba(75,158,255,.06); border-color:
 
     <div class="stress-card">
       <div class="stress-card-hdr">
-        <div class="stress-icon">&#x1F52C;</div>
+        <div class="stress-icon" id="stressIcon_occt">&#x1F52C;</div>
         <div class="stress-info">
           <div class="stress-name">OCCT</div>
           <div class="stress-desc">Test completo de CPU, GPU y fuente de poder</div>
@@ -4451,7 +4487,7 @@ html[data-theme="dark"] .ia-box { background:rgba(75,158,255,.06); border-color:
 
     <div class="stress-card">
       <div class="stress-card-hdr">
-        <div class="stress-icon">&#x1F3AE;</div>
+        <div class="stress-icon" id="stressIcon_furmark">&#x1F3AE;</div>
         <div class="stress-info">
           <div class="stress-name">FurMark</div>
           <div class="stress-desc">Benchmark y test de estr&eacute;s de GPU</div>
@@ -4476,7 +4512,7 @@ html[data-theme="dark"] .ia-box { background:rgba(75,158,255,.06); border-color:
 
     <div class="stress-card">
       <div class="stress-card-hdr">
-        <div class="stress-icon">&#x1F9F9;</div>
+        <div class="stress-icon" id="avIcon_adwcleaner">&#x1F9F9;</div>
         <div class="stress-info">
           <div class="stress-name">AdwCleaner</div>
           <div class="stress-desc">Elimina adware, spyware y programas no deseados</div>
@@ -4491,7 +4527,7 @@ html[data-theme="dark"] .ia-box { background:rgba(75,158,255,.06); border-color:
 
     <div class="stress-card">
       <div class="stress-card-hdr">
-        <div class="stress-icon">&#x1F6E1;&#xFE0F;</div>
+        <div class="stress-icon" id="avIcon_malwarebytes">&#x1F6E1;&#xFE0F;</div>
         <div class="stress-info">
           <div class="stress-name">Malwarebytes</div>
           <div class="stress-desc">Detecta y elimina malware, ransomware y virus</div>
@@ -6505,6 +6541,19 @@ function limpiarColaImpresora(nombre) {
   });
 }
 
+// ── Íconos reales de herramientas (Test de Estrés / Antivirus) ─────────────
+// Solo reemplaza el emoji si llegó el ícono; si no, el emoji queda de fallback
+function _toolSetIcons(prefijo, nombres, raw) {
+  var d = JSON.parse(raw);
+  if (d.error) return;
+  Object.keys(nombres).forEach(function(t) {
+    var el = document.getElementById(prefijo + t);
+    if (el && d[t]) {
+      el.innerHTML = `<img src="data:image/png;base64,${d[t]}" alt="${nombres[t]}" style="width:40px; height:40px; border-radius:8px; object-fit:contain;">`;
+    }
+  });
+}
+
 // ── Test de Estrés modal ───────────────────────────────────────────────────
 var _stressNombres = {heavyload: 'HeavyLoad', occt: 'OCCT', furmark: 'FurMark'};
 var _stressDisponibles = {};
@@ -6540,6 +6589,9 @@ function abrirModalTestEstres() {
   document.getElementById('stressToast').style.display = 'none';
   document.getElementById('stressModal').classList.add('open');
   if (!window.pywebview || !window.pywebview.api) return;
+  window.pywebview.api.get_stress_icons().then(function(raw) {
+    _toolSetIcons('stressIcon_', _stressNombres, raw);
+  }).catch(function() {});
   window.pywebview.api.check_stress_tools().then(function(raw) {
     var d = JSON.parse(raw);
     if (d.error) {
@@ -6616,6 +6668,9 @@ function abrirModalAntivirus() {
   document.getElementById('avToast').style.display = 'none';
   document.getElementById('antivirusModal').classList.add('open');
   if (!window.pywebview || !window.pywebview.api) return;
+  window.pywebview.api.get_antivirus_icons().then(function(raw) {
+    _toolSetIcons('avIcon_', _avNombres, raw);
+  }).catch(function() {});
   window.pywebview.api.check_antivirus_tools().then(function(raw) {
     var d = JSON.parse(raw);
     if (d.error) {
