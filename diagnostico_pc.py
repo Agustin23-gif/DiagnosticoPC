@@ -2394,6 +2394,78 @@ class Api:
         except Exception as e:
             return json.dumps({"error": str(e)})
 
+    # ── Resetear servicios de Windows Update ──────────────────────────
+    # Corre en un hilo; el JS consulta get_reset_wu_status() para ir marcando
+    # cada paso (mismo patrón que Sanar Windows). Stop/Start-Service no fallan
+    # si el servicio ya estaba detenido/iniciado (net stop/start sí).
+    _WU_LOCK     = threading.Lock()
+    _WU_SERVICES = ("wuauserv", "cryptSvc", "bits", "msiserver")
+
+    def _wu_steps(self):
+        win = os.environ.get("SystemRoot", r"C:\Windows")
+        steps  = [("stop", s, f"Deteniendo servicio {s}...") for s in Api._WU_SERVICES]
+        steps += [("ren", os.path.join(win, "SoftwareDistribution"), "Renombrando SoftwareDistribution..."),
+                  ("ren", os.path.join(win, "System32", "catroot2"), "Renombrando catroot2...")]
+        steps += [("start", s, f"Iniciando servicio {s}...") for s in Api._WU_SERVICES]
+        return steps
+
+    def reset_windows_update(self):
+        try:
+            with Api._WU_LOCK:
+                if getattr(self, "_wu_running", False):
+                    return json.dumps({"error": "Ya hay un reseteo en curso"})
+                steps = self._wu_steps()
+                self._wu_state = [{"label": lbl, "state": "pending", "error": ""}
+                                  for _, _, lbl in steps]
+                self._wu_running = True
+            threading.Thread(target=self._wu_worker, args=(steps,), daemon=True).start()
+            return json.dumps({"running": True})
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
+    def _wu_worker(self, steps):
+        import shutil
+        try:
+            for i, (kind, target, _lbl) in enumerate(steps):
+                with Api._WU_LOCK:
+                    self._wu_state[i]["state"] = "running"
+                err = ""
+                try:
+                    if kind == "ren":
+                        if os.path.exists(target):
+                            old = target + ".old"
+                            # .old de un reseteo anterior: se descarta para poder renombrar
+                            if os.path.exists(old):
+                                shutil.rmtree(old, ignore_errors=True)
+                            os.rename(target, old)
+                    else:
+                        verb = "Stop-Service -Force" if kind == "stop" else "Start-Service"
+                        r = subprocess.run(
+                            ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                             f"{verb} -Name {Api._ps_literal(target)} -ErrorAction Stop"],
+                            capture_output=True, text=True, timeout=30, errors="replace", **_NWIN,
+                        )
+                        if r.returncode != 0:
+                            err = (r.stderr.strip().splitlines() or [""])[0].strip() or "Error"
+                except Exception as e:
+                    err = str(e)
+                with Api._WU_LOCK:
+                    self._wu_state[i]["state"] = "err" if err else "ok"
+                    self._wu_state[i]["error"] = err
+        finally:
+            with Api._WU_LOCK:
+                self._wu_running = False
+
+    def get_reset_wu_status(self):
+        with Api._WU_LOCK:
+            steps = [dict(s) for s in getattr(self, "_wu_state", [])]
+            running = getattr(self, "_wu_running", False)
+        return json.dumps({
+            "running": running,
+            "steps":   steps,
+            "errors":  [s["label"] for s in steps if s["state"] == "err"],
+        })
+
     # ── Optimizar Windows (WinUtil) ───────────────────────────────────
     def launch_winutil(self):
         try:
@@ -4017,6 +4089,22 @@ html[data-theme="dark"] .disp-card { background:#080E1C; border-color:#1A2540; }
 html[data-theme="dark"] .disp-badge.primary   { background:rgba(75,158,255,.15); color:#4B9EFF; }
 html[data-theme="dark"] .disp-badge.secondary { background:rgba(255,255,255,.08); color:#9CA3AF; }
 .disp-grid { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+/* ── Windows al Día modal ── */
+.wu-divider { display:flex; align-items:center; gap:8px; margin:22px 0 6px; }
+.wu-divider span { font-size:13px; font-weight:700; color:var(--txt); white-space:nowrap; }
+.wu-divider div { flex:1; height:1px; background:var(--border-card); }
+html[data-theme="dark"] .wu-divider div { background:#1A2540; }
+.wu-reset-btn { width:100%; padding:12px; border:none; border-radius:10px; background:linear-gradient(135deg,#F97316,#EF4444); color:#fff; font-family:var(--font-ui); font-size:14px; font-weight:700; cursor:pointer; transition:opacity .15s; }
+.wu-reset-btn:hover { opacity:.9; }
+.wu-confirm-card { background:rgba(245,158,11,.10); border:1px solid rgba(245,158,11,.30); border-radius:10px; padding:12px 14px; font-size:13px; line-height:1.55; color:var(--txt); margin-bottom:12px; }
+.wu-steps { max-height:260px; overflow-y:auto; padding-right:4px; }
+.wu-step { display:flex; gap:10px; padding:5px 0; font-size:13px; color:var(--txt); }
+.wu-step.running { font-weight:600; }
+.wu-step-err { font-size:11px; color:#B91C1C; margin-top:2px; word-break:break-word; }
+html[data-theme="dark"] .wu-step-err { color:#F87171; }
+.wu-result { padding:12px 14px; border-radius:10px; font-size:13px; font-weight:600; line-height:1.55; margin:12px 0; }
+.wu-result.ok  { background:rgba(34,197,94,.12); color:#15803D; }
+.wu-result.err { background:rgba(239,68,68,.12); color:#B91C1C; }
 .hist-empty { text-align:center; background:rgba(255,255,255,0.15); border:1px solid rgba(255,255,255,0.25); border-radius:10px; padding:16px 14px; color:white; font-size:13px; line-height:1.6; }
 </style>
 </head>
@@ -4130,7 +4218,7 @@ html[data-theme="dark"] .disp-badge.secondary { background:rgba(255,255,255,.08)
   <button class="btn btn-t" onclick="openNetModal()">&#x26A1; Pulso de Red</button>
   <button class="btn btn-t" onclick="abrirModalLimpieza()">&#x1F9F9; Limpiar Sistema</button>
   <button class="btn btn-t" onclick="abrirAdminDispositivos()">&#x2699;&#xFE0F; Inspector de Dispositivos</button>
-  <button class="btn btn-t" onclick="abrirWindowsUpdate()">&#x1F6E1;&#xFE0F; Windows al D&iacute;a</button>
+  <button class="btn btn-t" onclick="abrirModalWindowsAlDia()">&#x1F6E1;&#xFE0F; Windows al D&iacute;a</button>
   <button class="btn btn-t" onclick="abrirModalTestEstres()">&#x1F525; Test de Estr&eacute;s</button>
   <button class="btn btn-t" onclick="abrirModalAntivirus()">&#x1F6E1;&#xFE0F; Antivirus</button>
   <button class="btn btn-t" onclick="abrirModalModoRed()">&#x1F310; Modo Red</button>
@@ -4859,6 +4947,39 @@ html[data-theme="dark"] .disp-badge.secondary { background:rgba(255,255,255,.08)
 
     <!-- Error (oculto al inicio) -->
     <div id="dispErrorSection" style="display:none"></div>
+  </div>
+</div>
+
+<div id="wuModal" class="modal-ov" style="z-index:1000" onclick="cerrarModalWindowsAlDiaOv(event)">
+  <div class="chk-modal-card" style="max-width:500px;pointer-events:auto;z-index:1001">
+    <button class="modal-x" onclick="cerrarModalWindowsAlDia()">&#x2715;</button>
+    <div style="font-size:16px;font-weight:700;margin-bottom:4px;color:var(--txt)">&#x1F6E1;&#xFE0F; Windows al D&iacute;a</div>
+    <div style="font-size:12px;color:var(--txt2);margin-bottom:16px">Actualizaciones del sistema operativo</div>
+
+    <!-- Sección 1: Windows Update (lo que ya hacía el botón) -->
+    <div style="font-size:13px;color:var(--txt2);margin-bottom:10px">Busc&aacute; e instal&aacute; las actualizaciones pendientes desde la configuraci&oacute;n de Windows.</div>
+    <button class="btn btn-p" style="width:100%;padding:11px;border-radius:10px;font-size:14px" onclick="abrirWindowsUpdate()">&#x1F6E1;&#xFE0F; Abrir Windows Update</button>
+
+    <!-- Sección 2: Reparar Windows Update -->
+    <div class="wu-divider"><span>&#x1F527; &iquest;Windows Update trabado?</span><div></div></div>
+    <div style="font-size:12px;color:var(--txt2);margin-bottom:12px">Si Windows Update no funciona o est&aacute; colgado, esto detiene y reinicia todos sus servicios.</div>
+
+    <div id="wuResetMain">
+      <button class="wu-reset-btn" onclick="resetearWindowsUpdate()">&#x2699;&#xFE0F; Resetear Servicios de Windows Update</button>
+    </div>
+
+    <div id="wuResetConfirm" style="display:none">
+      <div class="wu-confirm-card">&#x26A0;&#xFE0F; Esto va a reiniciar los servicios de Windows Update.<br>El proceso tarda aproximadamente 30 segundos.</div>
+      <div style="display:flex;gap:10px;justify-content:flex-end">
+        <button class="btn-chk-confirm-no" onclick="cancelarReset()">Cancelar</button>
+        <button class="btn-wu-confirm" onclick="ejecutarResetWindowsUpdate()">Continuar</button>
+      </div>
+    </div>
+
+    <div id="wuResetProgress" style="display:none">
+      <div class="wu-steps" id="wuSteps"></div>
+      <div id="wuResetResult"></div>
+    </div>
   </div>
 </div>
 
@@ -7401,6 +7522,123 @@ function cerrarModalPantallas() {
 
 function cerrarModalPantallasOv(e) {
   if (e.target === document.getElementById('pantallasModal')) cerrarModalPantallas();
+}
+
+// ── Windows al Día modal ───────────────────────────────────────────────────
+// El reseteo corre en un hilo de Python; acá se consulta el estado cada 700 ms
+// (patrón de Sanar Windows). Si se cierra el modal el proceso sigue: al
+// reabrirlo se retoma el progreso.
+var _wuPollTmr = null;
+
+function _wuMostrar(seccion) {
+  ['wuResetMain','wuResetConfirm','wuResetProgress'].forEach(function(id) {
+    document.getElementById(id).style.display = (id === seccion) ? 'block' : 'none';
+  });
+}
+
+function _wuDetenerPoll() {
+  if (_wuPollTmr) { clearInterval(_wuPollTmr); _wuPollTmr = null; }
+}
+
+function _wuRenderPasos(pasos) {
+  // Solo los pasos ya iniciados: van apareciendo uno a uno
+  var iconos = {running: '&#x23F3;', ok: '&#x2705;', err: '&#x274C;'};
+  document.getElementById('wuSteps').innerHTML = pasos.filter(function(p) {
+    return p.state !== 'pending';
+  }).map(function(p) {
+    return '<div class="wu-step ' + p.state + '">'
+      + '<span>' + iconos[p.state] + '</span>'
+      + '<div>' + _escHtml(p.label)
+      + (p.error ? '<div class="wu-step-err">' + _escHtml(p.error) + '</div>' : '')
+      + '</div></div>';
+  }).join('');
+}
+
+function _wuMostrarResultado(errores) {
+  var el = document.getElementById('wuResetResult');
+  if (!errores.length) {
+    el.innerHTML = '<div class="wu-result ok">&#x2705; Servicios de Windows Update reiniciados correctamente.<br>Abr&iacute; Windows Update y prob&aacute; actualizando de nuevo.</div>'
+      + '<div style="display:flex;gap:10px;justify-content:flex-end">'
+      + '<button class="btn-chk-confirm-no" onclick="cerrarModalWindowsAlDia()">Cerrar</button>'
+      + '<button class="btn-wu-confirm" onclick="abrirWindowsUpdate()">Abrir Windows Update</button>'
+      + '</div>';
+  } else {
+    el.innerHTML = '<div class="wu-result err">&#x26A0;&#xFE0F; Algunos servicios no pudieron reiniciarse.<br>Intent&aacute; ejecutar el programa como administrador.</div>'
+      + '<div style="display:flex;gap:10px;justify-content:flex-end">'
+      + '<button class="btn-chk-confirm-no" onclick="cerrarModalWindowsAlDia()">Cerrar</button>'
+      + '</div>';
+  }
+}
+
+function _wuPoll() {
+  window.pywebview.api.get_reset_wu_status().then(function(raw) {
+    var s = JSON.parse(raw);
+    _wuRenderPasos(s.steps || []);
+    if (!s.running) {
+      _wuDetenerPoll();
+      _wuMostrarResultado(s.errors || []);
+    }
+  }).catch(function() {});
+}
+
+function _wuIniciarPoll() {
+  _wuDetenerPoll();
+  _wuPollTmr = setInterval(_wuPoll, 700);
+  _wuPoll();
+}
+
+function abrirModalWindowsAlDia() {
+  _wuDetenerPoll();
+  _wuMostrar('wuResetMain');
+  document.getElementById('wuModal').classList.add('open');
+  if (!window.pywebview || !window.pywebview.api) return;
+  window.pywebview.api.get_reset_wu_status().then(function(raw) {
+    var s = JSON.parse(raw);
+    if (s.running) {
+      document.getElementById('wuResetResult').innerHTML = '';
+      _wuMostrar('wuResetProgress');
+      _wuIniciarPoll();
+    }
+  }).catch(function() {});
+}
+
+function cerrarModalWindowsAlDia() {
+  document.getElementById('wuModal').classList.remove('open');
+  _wuDetenerPoll();
+}
+
+function cerrarModalWindowsAlDiaOv(e) {
+  if (e.target === document.getElementById('wuModal')) cerrarModalWindowsAlDia();
+}
+
+function resetearWindowsUpdate() {
+  mostrarConfirmacionReset();
+}
+
+function mostrarConfirmacionReset() {
+  _wuMostrar('wuResetConfirm');
+}
+
+function cancelarReset() {
+  _wuMostrar('wuResetMain');
+}
+
+function ejecutarResetWindowsUpdate() {
+  document.getElementById('wuSteps').innerHTML = '';
+  document.getElementById('wuResetResult').innerHTML = '';
+  _wuMostrar('wuResetProgress');
+  window.pywebview.api.reset_windows_update().then(function(raw) {
+    var d = JSON.parse(raw);
+    if (d.error && d.error.indexOf('en curso') === -1) {
+      document.getElementById('wuResetResult').innerHTML =
+        '<div class="wu-result err">&#x26A0;&#xFE0F; ' + _escHtml(d.error) + '</div>';
+      return;
+    }
+    _wuIniciarPoll();
+  }).catch(function(err) {
+    document.getElementById('wuResetResult').innerHTML =
+      '<div class="wu-result err">&#x26A0;&#xFE0F; Error inesperado: ' + _escHtml(err) + '</div>';
+  });
 }
 
 // ── Tema guardado en config.json ───────────────────────────────────────────
