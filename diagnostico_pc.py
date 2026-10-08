@@ -1571,8 +1571,13 @@ class Api:
                 if getattr(self, '_net_cancel', False):
                     return
                 try:
+                    _req = _ur.Request(_url, headers={
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                                      "AppleWebKit/537.36 (KHTML, like Gecko) "
+                                      "Chrome/120.0.0.0 Safari/537.36"
+                    })
                     t0 = _t.time()
-                    with _ur.urlopen(_url, timeout=30, context=_ctx if _url.startswith('https') else None) as resp:
+                    with _ur.urlopen(_req, timeout=30, context=_ctx if _url.startswith('https') else None) as resp:
                         datos = resp.read()
                     fin = _t.time()
                     segundos = fin - t0
@@ -1603,6 +1608,9 @@ class Api:
                 try:
                     req = _ur.Request(_url, data=datos_subida, method='POST')
                     req.add_header('Content-Type', 'application/octet-stream')
+                    req.add_header('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                                                 'AppleWebKit/537.36 (KHTML, like Gecko) '
+                                                 'Chrome/120.0.0.0 Safari/537.36')
                     t0 = _t.time()
                     with _ur.urlopen(req, timeout=30, context=_ctx if _url.startswith('https') else None) as resp:
                         resp.read()
