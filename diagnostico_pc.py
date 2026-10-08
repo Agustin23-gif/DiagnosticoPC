@@ -5854,7 +5854,7 @@ function buscarProducto(fabricante, modelo, esNotebook) {
     } else if (fab.includes('asus')) {
       url = 'https://www.asus.com/search/?q=' + modeloEncoded;
     } else if (fab.includes('acer')) {
-      var modeloAcer = modelo.replace(/\s+/g, '_');
+      var modeloAcer = modelo.replace(/\\s+/g, '_');
       url = 'https://www.acer.com/us-en/support/product-support/' + modeloAcer;
     } else if (fab.includes('msi')) {
       url = 'https://www.msi.com/search?keyword=' + modeloEncoded + '&cate=app_laptop';
