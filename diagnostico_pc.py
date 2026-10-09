@@ -301,6 +301,99 @@ class Api:
             "hostname": self._hostname,
         })
 
+    # ── Batería ───────────────────────────────────────────────────────────
+    # psutil da % y enchufado al instante; capacidades, ciclos y voltaje
+    # salen de root\WMI (Win32_Battery casi nunca trae FullChargeCapacity)
+    # y se cachean 60 s para no lanzar PowerShell en cada poll.
+    _batt_detail = {}
+    _batt_detail_ts = 0.0
+    _batt_refreshing = False
+    _batt_was_available = False
+
+    _BATT_PS = (
+        "$o=@{};"
+        "try{$x=@(Get-CimInstance -Namespace root/WMI -ClassName BatteryStaticData -EA Stop);"
+        "$o.design=($x|Measure-Object -Property DesignedCapacity -Sum).Sum}catch{};"
+        "try{$x=@(Get-CimInstance -Namespace root/WMI -ClassName BatteryFullChargedCapacity -EA Stop);"
+        "$o.full=($x|Measure-Object -Property FullChargedCapacity -Sum).Sum}catch{};"
+        "try{$x=@(Get-CimInstance -Namespace root/WMI -ClassName BatteryCycleCount -EA Stop);"
+        "$o.cycles=($x|Measure-Object -Property CycleCount -Maximum).Maximum}catch{};"
+        "try{$x=@(Get-CimInstance -Namespace root/WMI -ClassName BatteryStatus -EA Stop);"
+        "$o.voltage=($x|Measure-Object -Property Voltage -Maximum).Maximum}catch{};"
+        "try{$b=Get-CimInstance Win32_Battery -EA Stop|Select-Object -First 1;"
+        "$o.w_design=$b.DesignCapacity;$o.w_full=$b.FullChargeCapacity;$o.w_voltage=$b.DesignVoltage}catch{};"
+        "try{$t=Get-CimInstance -Namespace root/LibreHardwareMonitor -ClassName Sensor -EA Stop|"
+        "Where-Object{$_.SensorType -eq 'Temperature' -and $_.Name -like '*Battery*'}|Select-Object -First 1;"
+        "if($t){$o.temp=$t.Value}}catch{};"
+        "$o|ConvertTo-Json -Compress"
+    )
+
+    def _batt_refresh_worker(self):
+        import time
+        detail = {}
+        try:
+            r = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command", self._BATT_PS],
+                capture_output=True, text=True, timeout=20, **_NWIN,
+            )
+            if r.returncode == 0 and r.stdout.strip():
+                raw = json.loads(r.stdout.strip())
+
+                def _num(*keys):
+                    for k in keys:
+                        v = raw.get(k)
+                        if isinstance(v, (int, float)) and v > 0:
+                            return v
+                    return 0
+
+                design  = _num("design", "w_design")
+                full    = _num("full", "w_full")
+                cycles  = _num("cycles")
+                voltage = _num("voltage", "w_voltage")
+                detail = {
+                    "design_capacity": int(design),
+                    "full_capacity":   int(full),
+                    "health":      round(full / design * 100, 1) if design and full else None,
+                    "cycle_count": int(cycles) if cycles else None,
+                    "voltage_mv":  int(voltage),
+                    "voltage_v":   round(voltage / 1000, 2) if voltage else None,
+                }
+                temp = raw.get("temp")
+                if isinstance(temp, (int, float)) and temp > 0:
+                    detail["temperature"] = round(temp, 1)
+        except Exception:
+            pass
+        finally:
+            self._batt_detail = detail
+            self._batt_detail_ts = time.time()
+            self._batt_refreshing = False
+
+    def get_battery_info(self):
+        import time
+        try:
+            battery = psutil.sensors_battery()
+        except Exception:
+            battery = None
+        if battery is None:
+            self._batt_was_available = False
+            return json.dumps({"available": False})
+        # Refrescar detalle si está viejo o si la batería recién apareció
+        stale = (time.time() - self._batt_detail_ts) > 60 or not self._batt_was_available
+        self._batt_was_available = True
+        if stale and not self._batt_refreshing:
+            self._batt_refreshing = True
+            threading.Thread(target=self._batt_refresh_worker, daemon=True).start()
+        secs = battery.secsleft
+        result = {
+            "available": True,
+            "percent":   round(battery.percent, 1),
+            "plugged":   battery.power_plugged,
+            "secsleft":  int(secs) if isinstance(secs, int) and secs > 0 else None,
+            "detail_ready": self._batt_detail_ts > 0,
+        }
+        result.update(self._batt_detail)
+        return json.dumps(result)
+
     def get_assets(self):
         logo_b64 = ""
         personaje_b64 = ""
@@ -3965,6 +4058,22 @@ html[data-theme="dark"] .status-pill.warn { color:#F59E0B; background:rgba(245,1
 html[data-theme="dark"] .status-pill.crit { color:#EF4444; background:rgba(239,68,68,.15); }
 /* ── RAM segmented canvas ── */
 #ramCanvas { width:100%; height:8px; display:block; margin-top:10px; }
+/* ── Batería (card automática, solo si hay batería) ──
+   Con batería: la columna Almacenamiento/Herramientas ocupa 2 filas y la
+   card de batería llena el hueco bajo CPU + RAM. Sin batería no cambia nada. */
+.batt-card { display:none; }
+.metrics.has-batt { grid-template-rows:auto 1fr; }
+.metrics.has-batt > :nth-child(3) { grid-column:3; grid-row:1 / span 2; }
+.metrics.has-batt > .batt-card { grid-column:1 / span 2; grid-row:2; }
+.batt-body { display:grid; grid-template-columns:minmax(150px,200px) 1fr; gap:20px; align-items:start; }
+.batt-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px 16px; }
+.batt-k { font-size:10px; font-weight:600; color:var(--txt2); letter-spacing:0.06em; text-transform:uppercase; }
+.batt-v { font-size:15px; font-weight:600; color:var(--txt); margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.batt-bar { height:8px; border-radius:var(--radius-pill); background:#E0E0E0; overflow:hidden; }
+html[data-theme="dark"] .batt-bar { background:#2A2A3E; }
+.batt-bar-fill { height:100%; width:0; border-radius:inherit; background:var(--ok); transition:width .4s, background .4s; }
+.status-pill.good { color:#4D7C0F; background:rgba(132,204,22,.15); }
+html[data-theme="dark"] .status-pill.good { color:#A3E635; background:rgba(132,204,22,.15); }
 /* ── Pulso de Red modal ── */
 .net-info-grid { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:14px; }
 .net-info-item { border-radius:8px; padding:10px 12px; }
@@ -4189,6 +4298,27 @@ html[data-theme="dark"] .wu-step-err { color:#F87171; }
       </button>
     </div>
   </div>
+  </div>
+  <div class="card batt-card" id="battCard">
+    <div class="card-hdr"><span class="card-icon" id="iconBATT"></span><span class="card-lbl">Bater&iacute;a</span><span class="status-pill ok" id="battStatus">&#x25CF; LEYENDO&hellip;</span></div>
+    <div class="batt-body">
+      <div>
+        <div style="display:flex;align-items:baseline;gap:3px">
+          <span class="card-val" id="battPct">0</span><span class="card-unit">%</span>
+        </div>
+        <div class="card-sub" id="battCharge" style="white-space:normal">—</div>
+        <div class="batt-k" style="margin:12px 0 6px">Salud</div>
+        <div class="batt-bar"><div class="batt-bar-fill" id="battBar"></div></div>
+      </div>
+      <div class="batt-grid">
+        <div><div class="batt-k">Capacidad actual</div><div class="batt-v" id="battFull">—</div></div>
+        <div><div class="batt-k">Capacidad original</div><div class="batt-v" id="battDesign">—</div></div>
+        <div><div class="batt-k">Salud</div><div class="batt-v" id="battHealth">—</div></div>
+        <div><div class="batt-k">Ciclos de carga</div><div class="batt-v" id="battCycles">—</div></div>
+        <div><div class="batt-k">Voltaje</div><div class="batt-v" id="battVolt">—</div></div>
+        <div id="battTempItem" style="display:none"><div class="batt-k">Temperatura</div><div class="batt-v" id="battTemp">—</div></div>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -5171,6 +5301,73 @@ function pollMetrics() {
   window.pywebview.api.get_metrics().then(applyMetrics).catch(()=>{});
 }
 setInterval(pollMetrics, 2000);
+
+// ── Batería: la card solo aparece si psutil detecta batería ──
+document.getElementById('iconBATT').innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="17" height="10" rx="2"/><line x1="22" y1="11" x2="22" y2="13"/><rect x="5" y="10" width="8" height="4" rx="1" fill="currentColor" stroke="none"/></svg>`;
+
+function _battMwh(v) {
+  return v ? Number(v).toLocaleString('es-PY') + ' mWh' : 'N/D';
+}
+function actualizarBateria(raw) {
+  const d = typeof raw === 'string' ? JSON.parse(raw) : raw;
+  const card = document.getElementById('battCard');
+  if (!card) return;
+  const grid = card.parentNode;
+  if (!d || !d.available) {
+    card.style.display = 'none';
+    grid.classList.remove('has-batt');
+    return;
+  }
+  card.style.display = 'block';
+  grid.classList.add('has-batt');
+
+  const pct = Math.round(d.percent);
+  document.getElementById('battPct').textContent = pct;
+  let carga = d.plugged ? (pct >= 99 ? 'Completa ✅' : 'Cargando ⚡') : 'Desconectado 🔌';
+  if (!d.plugged && d.secsleft) {
+    const h = Math.floor(d.secsleft / 3600), m = Math.floor(d.secsleft % 3600 / 60);
+    carga += `  ·  ${h ? h + ' h ' : ''}${m} min restantes`;
+  }
+  document.getElementById('battCharge').textContent = carga;
+
+  const hl = typeof d.health === 'number' ? d.health : null;
+  const pill = document.getElementById('battStatus');
+  let cls = 'ok', txt = '● LEYENDO…';
+  if (hl !== null) {
+    if (hl >= 80)      { cls = 'ok';   txt = '● EXCELENTE'; }
+    else if (hl >= 60) { cls = 'good'; txt = '● BUENA'; }
+    else if (hl >= 40) { cls = 'warn'; txt = '● REGULAR'; }
+    else               { cls = 'crit'; txt = '● MALA'; }
+  } else if (d.detail_ready) {
+    txt = '● SIN DATOS';
+  }
+  pill.className = 'status-pill ' + cls;
+  pill.textContent = txt;
+
+  const bar = document.getElementById('battBar');
+  bar.style.width = (hl === null ? 0 : Math.min(hl, 100)) + '%';
+  bar.style.background = hl >= 80 ? 'var(--ok)' : hl >= 40 ? 'var(--warn)' : '#EF4444';
+
+  const pend = d.detail_ready ? 'N/D' : '…';
+  document.getElementById('battFull').textContent   = d.detail_ready ? _battMwh(d.full_capacity) : pend;
+  document.getElementById('battDesign').textContent = d.detail_ready ? _battMwh(d.design_capacity) : pend;
+  document.getElementById('battHealth').textContent = hl !== null ? hl + '%' : pend;
+  document.getElementById('battCycles').textContent = d.cycle_count ? d.cycle_count : pend;
+  document.getElementById('battVolt').textContent   = d.voltage_v ? d.voltage_v.toFixed(1) + ' V' : pend;
+  const tItem = document.getElementById('battTempItem');
+  if (typeof d.temperature === 'number') {
+    document.getElementById('battTemp').textContent = d.temperature + ' °C';
+    tItem.style.display = 'block';
+  } else {
+    tItem.style.display = 'none';
+  }
+}
+function pollBattery() {
+  if (!window.pywebview || !window.pywebview.api || !window.pywebview.api.get_battery_info) return;
+  window.pywebview.api.get_battery_info().then(actualizarBateria).catch(function() {});
+}
+setInterval(pollBattery, 5000);
+window.addEventListener('pywebviewready', pollBattery);
 
 function pollDiskActivity() {
   if (!window.pywebview||!window.pywebview.api) return;
