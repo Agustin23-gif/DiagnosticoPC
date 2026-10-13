@@ -3441,6 +3441,24 @@ Generá el resumen para el cliente:"""
         except Exception:
             pass
 
+    # ── Toast de estado al iniciar ────────────────────────────────────────
+    # Solo discos fijos: el pendrive del técnico (removable) no debe disparar
+    # la alerta de "disco lleno".
+    def get_disk_usage_pct(self):
+        discos = []
+        try:
+            for p in psutil.disk_partitions(all=False):
+                if "fixed" not in (p.opts or "") or not p.mountpoint:
+                    continue
+                try:
+                    u = psutil.disk_usage(p.mountpoint)
+                    discos.append({"nombre": p.mountpoint[:2], "pct": round(u.percent)})
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        return json.dumps(discos)
+
 
 # ── HTML UI ───────────────────────────────────────────────────────────────
 HTML = """<!DOCTYPE html>
@@ -4223,6 +4241,15 @@ html[data-theme="dark"] .wu-step-err { color:#F87171; }
 .wu-result.ok  { background:rgba(34,197,94,.12); color:#15803D; }
 .wu-result.err { background:rgba(239,68,68,.12); color:#B91C1C; }
 .hist-empty { text-align:center; background:rgba(255,255,255,0.15); border:1px solid rgba(255,255,255,0.25); border-radius:10px; padding:16px 14px; color:white; font-size:13px; line-height:1.6; }
+#toast-estado { animation: slideInRight 0.3s ease; border: 1px solid rgba(255,255,255,0.2); }
+@keyframes slideInRight {
+  from { transform: translateX(120%); opacity: 0; }
+  to   { transform: translateX(0);    opacity: 1; }
+}
+@keyframes slideOutRight {
+  from { transform: translateX(0);    opacity: 1; }
+  to   { transform: translateX(120%); opacity: 0; }
+}
 </style>
 </head>
 <body>
@@ -4242,6 +4269,22 @@ html[data-theme="dark"] .wu-step-err { color:#F87171; }
     <span id="themeIcon"></span>
   </button>
 </header>
+
+<div id="toast-estado" style="display:none; position:fixed;
+    top:70px; right:16px; z-index:2000;
+    border-radius:12px; padding:12px 16px;
+    min-width:280px; max-width:360px;
+    align-items:center; gap:10px;
+    font-family:'Plus Jakarta Sans',sans-serif;
+    font-size:13px; font-weight:600; color:#fff;
+    box-shadow:0 4px 20px rgba(0,0,0,0.15);">
+  <span id="toast-estado-msg"></span>
+  <button onclick="cerrarToastEstado()" style="
+    margin-left:auto; background:transparent;
+    border:none; color:#fff; font-size:18px;
+    cursor:pointer; padding:0; line-height:1;
+    pointer-events:auto;">&times;</button>
+</div>
 
 <main class="main-scroll">
 <div class="section-label">MONITOREO EN TIEMPO REAL</div>
@@ -7816,6 +7859,86 @@ new MutationObserver(function() {
   if (!window.pywebview || !window.pywebview.api) return;
   window.pywebview.api.save_theme(document.documentElement.getAttribute('data-theme')).catch(function() {});
 }).observe(document.documentElement, {attributes: true, attributeFilter: ['data-theme']});
+
+// ── Toast de estado al abrir el programa ──────────────────────────────────
+// No se toca applyMetrics: se observa #ramPct, que se reescribe en cada poll
+// de get_metrics (cada 2 s). Con el primer dato real se evalúan RAM y discos;
+// la CPU se vigila durante el primer minuto (≥90% sostenida por 10 s).
+// El toast aparece como máximo una vez por sesión.
+window._toastMostrado = false;
+var _estadoDiscos = null;
+var _estadoInicio = 0;
+var _estadoCpuAltaDesde = 0;
+
+function evaluarEstadoInicial(cpuPct, ramPct, discos) {
+  if (window._toastMostrado) return;
+  var problemas = [];
+  if (ramPct >= 90)      problemas.push({sev: 2, txt: 'RAM al límite (' + ramPct + '%)'});
+  else if (ramPct >= 80) problemas.push({sev: 1, txt: 'RAM alta (' + ramPct + '%)'});
+  (discos || []).forEach(function(disco) {
+    if (disco.pct >= 95)      problemas.push({sev: 2, txt: 'Disco ' + disco.nombre + ' casi lleno (' + disco.pct + '%)'});
+    else if (disco.pct >= 85) problemas.push({sev: 1, txt: 'Disco ' + disco.nombre + ' lleno al ' + disco.pct + '%'});
+  });
+  if (cpuPct !== null && cpuPct >= 90) problemas.push({sev: 1, txt: 'CPU sostenida al ' + cpuPct + '% por más de 10 s'});
+  if (problemas.length === 0) return;
+
+  problemas.sort(function(a, b) { return b.sev - a.sev; });
+  var nivel = problemas[0].sev === 2 ? 'critical' : 'warn';
+  var icono = nivel === 'critical' ? '🔴 ' : '⚠️ ';
+  var mensaje = problemas.length === 1
+    ? icono + problemas[0].txt
+    : icono + problemas.length + ' problemas detectados: ' + problemas[0].txt;
+  window._toastMostrado = true;
+  mostrarToastEstado(mensaje, nivel);
+}
+
+function mostrarToastEstado(mensaje, nivel) {
+  var toast = document.getElementById('toast-estado');
+  toast.style.background = nivel === 'critical' ? 'rgba(239,68,68,0.95)' : 'rgba(245,158,11,0.95)';
+  document.getElementById('toast-estado-msg').textContent = mensaje;
+  toast.style.animation = '';
+  toast.style.display = 'flex';
+  clearTimeout(window._toastTimer);
+  window._toastTimer = setTimeout(function() { cerrarToastEstado(); }, 6000);
+}
+
+function cerrarToastEstado() {
+  var toast = document.getElementById('toast-estado');
+  if (toast.style.display === 'none') return;
+  clearTimeout(window._toastTimer);
+  toast.style.animation = 'slideOutRight 0.3s ease forwards';
+  setTimeout(function() {
+    toast.style.display = 'none';
+    toast.style.animation = '';
+  }, 300);
+}
+
+var _estadoObs = new MutationObserver(function() {
+  if (!window.pywebview || !window.pywebview.api) return;
+  var ahora = Date.now();
+  var cpu = Math.round(parseFloat(document.getElementById('cpuPct').textContent) || 0);
+  var ram = Math.round(parseFloat(document.getElementById('ramPct').textContent) || 0);
+
+  if (!_estadoInicio) {
+    _estadoInicio = ahora;
+    window.pywebview.api.get_disk_usage_pct().then(function(raw) {
+      _estadoDiscos = JSON.parse(raw);
+      evaluarEstadoInicial(null, ram, _estadoDiscos);
+    }).catch(function() { _estadoDiscos = []; evaluarEstadoInicial(null, ram, []); });
+  }
+
+  if (cpu >= 90) {
+    if (!_estadoCpuAltaDesde) _estadoCpuAltaDesde = ahora;
+    if (ahora - _estadoCpuAltaDesde >= 10000 && _estadoDiscos !== null) {
+      evaluarEstadoInicial(cpu, ram, _estadoDiscos);
+    }
+  } else {
+    _estadoCpuAltaDesde = 0;
+  }
+
+  if (window._toastMostrado || ahora - _estadoInicio > 60000) _estadoObs.disconnect();
+});
+_estadoObs.observe(document.getElementById('ramPct'), {childList: true, characterData: true, subtree: true});
 
 window.addEventListener('resize', () => { _drawCPUFrame(_cpuDisp); drawRAM(_lastRamPct); });
 </script>
