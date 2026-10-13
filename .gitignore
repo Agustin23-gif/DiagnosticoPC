@@ -27,3 +27,6 @@ historial_diagnosticos.json.tmp
 
 # Configuración local con la API key de Claude — NUNCA subir
 config.json
+
+# Instaladores de WebView2 (los descarga build.ps1 / se agregan a mano)
+tools/webview2/*.exe

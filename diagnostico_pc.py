@@ -8137,6 +8137,185 @@ window.addEventListener('resize', () => { _drawCPUFrame(_cpuDisp); drawRAM(_last
 """
 
 
+# ── Arranque: verificación de WebView2 ────────────────────────────────────
+# Si pywebview no encuentra WebView2 (o .NET < 4.6.2) NO falla: cae en
+# silencio a MSHTML (Internet Explorer), que no ejecuta el JS de la UI →
+# ventana en blanco. Y si el Runtime es viejo, pywebview usa APIs que no
+# existen en esa versión (IsSwipeNavigationEnabled pide ≥ 101) y la página
+# nunca se carga. Por eso se verifica antes de abrir la ventana.
+_WV2_GUID = "{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"
+_WV2_MIN = (101, 0, 1210, 39)
+_WV2_URL = "https://go.microsoft.com/fwlink/p/?LinkId=2124703"
+# Instaladores aceptados en tools\webview2\, en orden de preferencia: el
+# Standalone (offline, ~180 MB, se baja a mano) y el bootstrapper (necesita
+# internet, lo descarga build.ps1).
+_WV2_INSTALADORES = ("MicrosoftEdgeWebView2RuntimeInstallerX64.exe",
+                     "MicrosoftEdgeWebview2Setup.exe")
+
+MB_OK, MB_YESNO, IDYES = 0x0, 0x4, 6
+MB_ICONERROR, MB_ICONWARNING, MB_ICONINFO = 0x10, 0x30, 0x40
+MB_SETFOREGROUND, MB_TOPMOST = 0x10000, 0x40000
+
+
+def _msgbox(texto, titulo, flags):
+    try:
+        import ctypes
+        return ctypes.windll.user32.MessageBoxW(
+            0, texto, titulo, flags | MB_SETFOREGROUND | MB_TOPMOST)
+    except Exception:
+        return 0
+
+
+def _base_path():
+    # _office_base_path no usa self: es la ruta base del programa (carpeta del .exe)
+    return Api._office_base_path(None)
+
+
+def _webview2_version():
+    """Versión del Runtime WebView2 como tupla, o None si no está instalado.
+    Mismas claves que revisa pywebview (HKCU y HKLM, WOW6432Node en x64)."""
+    if not _HAS_WINREG:
+        return None
+    sufijo = "Microsoft\\EdgeUpdate\\Clients\\" + _WV2_GUID
+    wow = "" if platform.machine() == "x86" else "WOW6432Node\\"
+    claves = [
+        (winreg.HKEY_CURRENT_USER,  "SOFTWARE\\" + sufijo),
+        (winreg.HKEY_LOCAL_MACHINE, "SOFTWARE\\" + wow + sufijo),
+    ]
+    mejor = None
+    for raiz, ruta in claves:
+        try:
+            with winreg.OpenKey(raiz, ruta) as k:
+                pv, _ = winreg.QueryValueEx(k, "pv")
+            v = tuple(int(x) for x in str(pv).split("."))
+            if any(v) and (mejor is None or v > mejor):
+                mejor = v
+        except Exception:
+            continue
+    return mejor
+
+
+def _dotnet_ok():
+    """pywebview usa WinForms vía pythonnet: necesita .NET Framework 4.6.2+."""
+    if not _HAS_WINREG:
+        return True
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                            r"SOFTWARE\Microsoft\NET Framework Setup\NDP\v4\Full") as k:
+            release, _ = winreg.QueryValueEx(k, "Release")
+        return release >= 394802
+    except Exception:
+        return False
+
+
+def check_webview2():
+    """True si el Runtime WebView2 instalado alcanza la versión mínima."""
+    v = _webview2_version()
+    return v is not None and v >= _WV2_MIN
+
+
+def _buscar_instalador_webview2():
+    # Primero junto al .exe (pendrive), después el copiado dentro del .exe
+    for carpeta in (os.path.join(_base_path(), "tools", "webview2"),
+                    resource_path(os.path.join("tools", "webview2"))):
+        for nombre in _WV2_INSTALADORES:
+            ruta = os.path.join(carpeta, nombre)
+            if os.path.isfile(ruta):
+                return ruta
+    return None
+
+
+def install_webview2():
+    instalador = _buscar_instalador_webview2()
+    if not instalador:
+        return False
+    try:
+        subprocess.run([instalador, "/silent", "/install"], timeout=900, **_NWIN)
+    except Exception:
+        return False
+    return check_webview2()
+
+
+def _verificar_requisitos():
+    """Se llama antes de crear la ventana. Devuelve False si no se debe abrir."""
+    if not _dotnet_ok():
+        _msgbox(
+            "PC House Diagnóstico requiere .NET Framework 4.6.2 o superior.\n\n"
+            "Actualizá Windows o instalá .NET Framework 4.8 desde:\n"
+            "https://dotnet.microsoft.com/download/dotnet-framework/net48",
+            "Componente requerido", MB_OK | MB_ICONINFO)
+        return False
+    if check_webview2():
+        return True
+
+    v = _webview2_version()
+    minimo = ".".join(str(n) for n in _WV2_MIN)
+    estado = ("No está instalado." if v is None else
+              "Versión instalada: " + ".".join(str(n) for n in v) + " (muy vieja).")
+    enlaces = ("Instalalo desde:\n" + _WV2_URL + "\n\nO descargalo desde aka.ms/webview2")
+
+    if not _buscar_instalador_webview2():
+        _msgbox("PC House Diagnóstico requiere Microsoft WebView2 " + minimo + " o superior.\n"
+                + estado + "\n\n" + enlaces,
+                "Componente requerido", MB_OK | MB_ICONINFO)
+        return False
+
+    r = _msgbox("PC House Diagnóstico requiere Microsoft WebView2 " + minimo + " o superior.\n"
+                + estado + "\n\n¿Querés instalarlo ahora?\n"
+                "Tarda de 1 a 5 minutos y el programa se abre solo al terminar.\n"
+                "(Con el instalador chico hace falta internet.)",
+                "Componente requerido", MB_YESNO | MB_ICONWARNING)
+    if r != IDYES:
+        return False
+    if install_webview2():
+        return True
+    _msgbox("No se pudo instalar WebView2 automáticamente.\n"
+            "Revisá la conexión a internet.\n\n" + enlaces,
+            "Error de instalación", MB_OK | MB_ICONERROR)
+    return False
+
+
+def _log_inicio_path():
+    return os.path.join(_base_path(), "error_inicio.log")
+
+
+def _registrar_errores_webview():
+    # pywebview solo LOGUEA los fallos de inicialización de WebView2 (y deja la
+    # ventana en blanco); se guardan en error_inicio.log junto al .exe.
+    try:
+        import logging
+        h = logging.FileHandler(_log_inicio_path(), encoding="utf-8", delay=True)
+        h.setLevel(logging.ERROR)
+        h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+        logging.getLogger("pywebview").addHandler(h)
+    except Exception:
+        pass
+
+
+_INICIO_TIMEOUT = 60  # s; el primer arranque de WebView2 en PCs lentas tarda
+
+
+def _vigilar_carga(window, cargada):
+    """Si la página no terminó de cargar en _INICIO_TIMEOUT s, avisar en vez de
+    dejar al técnico frente a una ventana en blanco."""
+    if cargada.wait(_INICIO_TIMEOUT):
+        return
+    r = _msgbox(
+        "La ventana no terminó de cargar después de " + str(_INICIO_TIMEOUT) + " segundos.\n\n"
+        "Posibles soluciones:\n"
+        "1. Instalá o repará Microsoft WebView2 (" + _WV2_URL + ")\n"
+        "2. Actualizá Windows\n"
+        "3. Ejecutá como administrador\n\n"
+        "Si hubo un error quedó registrado en error_inicio.log, junto al programa.\n\n"
+        "¿Querés cerrar el programa?",
+        "Error de inicio", MB_YESNO | MB_ICONWARNING)
+    if r == IDYES:
+        try:
+            window.destroy()
+        except Exception:
+            os._exit(1)
+
+
 # ── UAC elevation ─────────────────────────────────────────────────────────
 def _request_admin():
     """Re-launch the process elevated via UAC. Exits this process if a new one starts."""
@@ -8159,18 +8338,43 @@ def _request_admin():
 # ── Entry point ───────────────────────────────────────────────────────────
 def main():
     _request_admin()
-    api = Api()
-    _html = HTML.replace("__OFFICE_ICON_SRC__", _office_icon_src)
-    window = webview.create_window(
-        "PC HOUSE — Diagnóstico PC",
-        html=_html,
-        js_api=api,
-        width=1100,
-        height=780,
-        min_size=(900, 680),
-        background_color="#FFFFFF",
-    )
-    webview.start(debug=False)
+    if not _verificar_requisitos():
+        return
+    _registrar_errores_webview()
+    try:
+        api = Api()
+        _html = HTML.replace("__OFFICE_ICON_SRC__", _office_icon_src)
+        window = webview.create_window(
+            "PC HOUSE — Diagnóstico PC",
+            html=_html,
+            js_api=api,
+            width=1100,
+            height=780,
+            min_size=(900, 680),
+            background_color="#FFFFFF",
+        )
+        cargada = threading.Event()
+        window.events.loaded += cargada.set
+        window.events.closed += cargada.set  # cerrada antes de cargar: no avisar
+        # gui='edgechromium' explícito: _verificar_requisitos ya garantizó que
+        # pywebview lo va a poder usar (si no, caería a MSHTML = pantalla en blanco)
+        webview.start(_vigilar_carga, (window, cargada), gui="edgechromium", debug=False)
+    except Exception as e:
+        try:
+            import traceback
+            with open(_log_inicio_path(), "a", encoding="utf-8") as f:
+                f.write(datetime.datetime.now().isoformat(" ", "seconds") + "\n"
+                        + traceback.format_exc() + "\n")
+        except Exception:
+            pass
+        _msgbox(
+            "Error al iniciar el programa:\n" + str(e) + "\n\n"
+            "Posibles soluciones:\n"
+            "1. Instalá Microsoft WebView2\n"
+            "2. Actualizá Windows\n"
+            "3. Ejecutá como administrador\n\n"
+            "El detalle quedó en error_inicio.log, junto al programa.",
+            "Error de inicio", MB_OK | MB_ICONERROR)
 
 
 if __name__ == "__main__":

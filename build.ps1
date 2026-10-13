@@ -8,6 +8,24 @@ Write-Host ""
 Write-Host "  [1/3] Instalando PyInstaller..." -ForegroundColor Cyan
 python -m pip install pyinstaller --quiet
 
+# Bootstrapper de WebView2: se descarga ANTES de compilar para que quede
+# embebido en el .exe (tools\ va por --add-data) y además se copia al lado
+# del .exe en dist\tools\webview2 (carpeta que va al pendrive).
+$webview2Path = "tools\webview2\MicrosoftEdgeWebview2Setup.exe"
+if (-not (Test-Path $webview2Path)) {
+    New-Item -ItemType Directory -Force -Path "tools\webview2" | Out-Null
+    Write-Host "  Descargando WebView2 bootstrapper..." -ForegroundColor Cyan
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        Invoke-WebRequest -Uri "https://go.microsoft.com/fwlink/p/?LinkId=2124703" `
+            -OutFile $webview2Path -UseBasicParsing
+        Write-Host "  WebView2 bootstrapper descargado en $webview2Path" -ForegroundColor Green
+    } catch {
+        Remove-Item $webview2Path -ErrorAction SilentlyContinue
+        Write-Host "  AVISO: no se pudo descargar WebView2 ($($_.Exception.Message)). Se compila sin el." -ForegroundColor Yellow
+    }
+}
+
 Write-Host "  [2/3] Compilando ejecutable (puede tardar 2-3 minutos)..." -ForegroundColor Cyan
 python -m PyInstaller `
     --onefile `
@@ -32,6 +50,11 @@ python -m PyInstaller `
 Write-Host "  [3/3] Verificando resultado..." -ForegroundColor Cyan
 $exe = "dist\PC House Diagnostico.exe"
 if (Test-Path $exe) {
+    if (Test-Path $webview2Path) {
+        New-Item -ItemType Directory -Force -Path "dist\tools\webview2" | Out-Null
+        Copy-Item $webview2Path "dist\tools\webview2\" -Force
+        Write-Host "  WebView2 bootstrapper copiado a dist\tools\webview2" -ForegroundColor Green
+    }
     $mb = [math]::Round((Get-Item $exe).Length / 1MB, 1)
     Write-Host ""
     Write-Host "  Listo!  $exe  ($mb MB)" -ForegroundColor Green
