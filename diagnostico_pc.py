@@ -2567,6 +2567,60 @@ class Api:
             "errors":  [s["label"] for s in steps if s["state"] == "err"],
         })
 
+    # ── Log de Eventos (pestaña de Windows al Día) ────────────────────
+    # Errores/advertencias de System+Application más reinicios/apagados.
+    # Se usa el Level numérico (LevelDisplayName viene traducido al idioma
+    # de Windows) y la fecha se formatea en PowerShell, porque ConvertTo-Json
+    # de PS 5.1 la serializa como "/Date(...)/".
+    _EVT_SISTEMA_IDS = {41, 1074, 6005, 6006, 6008}
+
+    def get_system_events(self):
+        try:
+            ps_cmd = (
+                "[Console]::OutputEncoding=[Text.Encoding]::UTF8;"
+                "$a=@(Get-WinEvent -FilterHashtable @{LogName='System','Application';Level=1,2,3}"
+                " -MaxEvents 20 -ErrorAction SilentlyContinue);"
+                "$b=@(Get-WinEvent -FilterHashtable @{LogName='System';Id=41,1074,6005,6006,6008}"
+                " -MaxEvents 5 -ErrorAction SilentlyContinue);"
+                "@($a+$b)|Sort-Object LogName,RecordId -Unique|Sort-Object TimeCreated -Descending|"
+                "Select-Object -First 20|ForEach-Object{[pscustomobject]@{"
+                "log=$_.LogName;id=$_.Id;level=[int]$_.Level;provider=$_.ProviderName;"
+                "time=$_.TimeCreated.ToString('dd/MM/yyyy HH:mm');"
+                "msg=(([string]$_.Message) -split '\\r?\\n')[0].Trim()}}|"
+                "ConvertTo-Json -Compress"
+            )
+            r = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_cmd],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=20, **_NWIN,
+            )
+            events = []
+            if r.stdout.strip():
+                raw = json.loads(r.stdout.strip())
+                for item in ([raw] if isinstance(raw, dict) else raw):
+                    level = item.get("level") or 0
+                    if item.get("log") == "System" and item.get("id") in self._EVT_SISTEMA_IDS:
+                        tipo = "system"
+                    elif level in (1, 2):
+                        tipo = "error"
+                    elif level == 3:
+                        tipo = "warning"
+                    else:
+                        tipo = "system"
+                    message = item.get("msg") or "(sin descripción)"
+                    if len(message) > 120:
+                        message = message[:120] + "..."
+                    provider = (item.get("provider") or "").replace("Microsoft-Windows-", "")
+                    events.append({
+                        "time":     item.get("time") or "",
+                        "provider": provider or item.get("log") or "",
+                        "message":  message,
+                        "tipo":     tipo,
+                    })
+            return json.dumps(events)
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
     # ── Optimizar Windows (WinUtil) ───────────────────────────────────
     def launch_winutil(self):
         try:
@@ -4240,6 +4294,19 @@ html[data-theme="dark"] .wu-step-err { color:#F87171; }
 .wu-result { padding:12px 14px; border-radius:10px; font-size:13px; font-weight:600; line-height:1.55; margin:12px 0; }
 .wu-result.ok  { background:rgba(34,197,94,.12); color:#15803D; }
 .wu-result.err { background:rgba(239,68,68,.12); color:#B91C1C; }
+.wu-evt { background:var(--surface-card); border:1px solid var(--border-card); border-left:3px solid #3B82F6; border-radius:8px; padding:8px 12px; margin-bottom:6px; }
+.wu-evt.error   { border-left-color:#EF4444; }
+.wu-evt.warning { border-left-color:#F59E0B; }
+.wu-evt-top { display:flex; align-items:center; gap:8px; margin-bottom:4px; }
+.wu-evt-badge { font-size:11px; font-weight:700; padding:2px 8px; border-radius:6px; white-space:nowrap; background:rgba(59,130,246,.12); color:#1D4ED8; }
+.wu-evt.error   .wu-evt-badge { background:rgba(239,68,68,.12);  color:#B91C1C; }
+.wu-evt.warning .wu-evt-badge { background:rgba(245,158,11,.15); color:#C2410C; }
+.wu-evt-src  { font-size:11px; font-weight:600; color:var(--txt2); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.wu-evt-time { margin-left:auto; font-size:11px; color:var(--txt2); white-space:nowrap; }
+.wu-evt-msg  { font-size:12px; line-height:1.45; color:var(--txt); word-break:break-word; }
+html[data-theme="dark"] .wu-evt .wu-evt-badge         { color:#93C5FD; }
+html[data-theme="dark"] .wu-evt.error .wu-evt-badge   { color:#F87171; }
+html[data-theme="dark"] .wu-evt.warning .wu-evt-badge { color:#FBBF24; }
 .hist-empty { text-align:center; background:rgba(255,255,255,0.15); border:1px solid rgba(255,255,255,0.25); border-radius:10px; padding:16px 14px; color:white; font-size:13px; line-height:1.6; }
 #toast-estado { animation: slideInRight 0.3s ease; border: 1px solid rgba(255,255,255,0.2); }
 @keyframes slideInRight {
@@ -5137,6 +5204,22 @@ html[data-theme="dark"] .wu-step-err { color:#F87171; }
     <div style="font-size:16px;font-weight:700;margin-bottom:4px;color:var(--txt)">&#x1F6E1;&#xFE0F; Windows al D&iacute;a</div>
     <div style="font-size:12px;color:var(--txt2);margin-bottom:16px">Actualizaciones del sistema operativo</div>
 
+    <div style="display:flex;gap:8px;margin-bottom:16px">
+      <button id="wuTabActualizaciones" class="desc-tab active" onclick="cambiarPestañaWindowsAlDia('actualizaciones')">&#x1F504; Actualizaciones</button>
+      <button id="wuTabLog" class="desc-tab" onclick="cambiarPestañaWindowsAlDia('log')">&#x1F4CB; Log de Eventos</button>
+    </div>
+
+    <!-- Pestaña: Log de Eventos -->
+    <div id="wuPaneLog" style="display:none">
+      <div id="wuLogLoading" style="text-align:center;padding:32px 0">
+        <div style="width:40px;height:40px;border:3px solid var(--bar-track);border-top-color:var(--brand);border-radius:50%;animation:spin .8s linear infinite;margin:0 auto 14px"></div>
+        <div style="font-size:14px;color:var(--txt2)">Cargando eventos del sistema&hellip;</div>
+      </div>
+      <div id="wuLogList" style="display:none;max-height:360px;overflow-y:auto;padding-right:4px"></div>
+    </div>
+
+    <!-- Pestaña: Actualizaciones -->
+    <div id="wuPaneActualizaciones">
     <!-- Sección 1: Windows Update (lo que ya hacía el botón) -->
     <div style="font-size:13px;color:var(--txt2);margin-bottom:10px">Busc&aacute; e instal&aacute; las actualizaciones pendientes desde la configuraci&oacute;n de Windows.</div>
     <button class="btn btn-p" style="width:100%;padding:11px;border-radius:10px;font-size:14px" onclick="abrirWindowsUpdate()">&#x1F6E1;&#xFE0F; Abrir Windows Update</button>
@@ -5160,6 +5243,7 @@ html[data-theme="dark"] .wu-step-err { color:#F87171; }
     <div id="wuResetProgress" style="display:none">
       <div class="wu-steps" id="wuSteps"></div>
       <div id="wuResetResult"></div>
+    </div>
     </div>
   </div>
 </div>
@@ -7843,6 +7927,79 @@ function ejecutarResetWindowsUpdate() {
       '<div class="wu-result err">&#x26A0;&#xFE0F; Error inesperado: ' + _escHtml(err) + '</div>';
   });
 }
+
+// ── Windows al Día: pestaña Log de Eventos ────────────────────────────────
+// El log se pide cada vez que se toca la pestaña (datos frescos). _wuLogReqId
+// descarta respuestas viejas si se toca dos veces seguidas.
+var _wuLogReqId = 0;
+
+function cambiarPestañaWindowsAlDia(tab) {
+  var esLog = (tab === 'log');
+  document.getElementById('wuTabLog').classList.toggle('active', esLog);
+  document.getElementById('wuTabActualizaciones').classList.toggle('active', !esLog);
+  document.getElementById('wuPaneLog').style.display             = esLog ? 'block' : 'none';
+  document.getElementById('wuPaneActualizaciones').style.display = esLog ? 'none' : 'block';
+  if (esLog) cargarLogEventos();
+}
+
+function cargarLogEventos() {
+  document.getElementById('wuLogLoading').style.display = 'block';
+  document.getElementById('wuLogList').style.display = 'none';
+  if (!window.pywebview || !window.pywebview.api) return;
+  var miId = ++_wuLogReqId;
+  window.pywebview.api.get_system_events().then(function(raw) {
+    if (miId !== _wuLogReqId) return;
+    var d = JSON.parse(raw);
+    if (d.error) {
+      _wuLogMostrarLista('<div class="wu-result err">&#x26A0;&#xFE0F; No se pudo leer el log: ' + _escHtml(d.error) + '</div>');
+      return;
+    }
+    renderizarLogEventos(Array.isArray(d) ? d : []);
+  }).catch(function(err) {
+    if (miId !== _wuLogReqId) return;
+    _wuLogMostrarLista('<div class="wu-result err">&#x26A0;&#xFE0F; Error inesperado: ' + _escHtml(err) + '</div>');
+  });
+}
+
+function _wuLogMostrarLista(html) {
+  var lista = document.getElementById('wuLogList');
+  lista.innerHTML = html;
+  document.getElementById('wuLogLoading').style.display = 'none';
+  lista.style.display = 'block';
+  lista.scrollTop = 0;
+}
+
+function renderizarLogEventos(eventos) {
+  if (!eventos.length) {
+    _wuLogMostrarLista('<div class="wu-result ok">&#x2705; No hay errores ni advertencias recientes en el log del sistema.</div>');
+    return;
+  }
+  var badges = {
+    error:   '&#x274C; Error',
+    warning: '&#x26A0;&#xFE0F; Advertencia',
+    system:  '&#x1F504; Sistema'
+  };
+  _wuLogMostrarLista(eventos.map(function(ev) {
+    var tipo = badges[ev.tipo] ? ev.tipo : 'system';
+    return '<div class="wu-evt ' + tipo + '">'
+      + '<div class="wu-evt-top">'
+      +   '<span class="wu-evt-badge">' + badges[tipo] + '</span>'
+      +   '<span class="wu-evt-src">' + _escHtml(ev.provider) + '</span>'
+      +   '<span class="wu-evt-time">' + _escHtml(ev.time) + '</span>'
+      + '</div>'
+      + '<div class="wu-evt-msg">' + _escHtml(ev.message) + '</div>'
+      + '</div>';
+  }).join(''));
+}
+
+// Al abrir el modal siempre arranca en "Actualizaciones" (sin tocar
+// abrirModalWindowsAlDia: se observa la clase .open del overlay).
+var _wuModalAbierto = false;
+new MutationObserver(function() {
+  var abierto = document.getElementById('wuModal').classList.contains('open');
+  if (abierto && !_wuModalAbierto) cambiarPestañaWindowsAlDia('actualizaciones');
+  _wuModalAbierto = abierto;
+}).observe(document.getElementById('wuModal'), {attributes: true, attributeFilter: ['class']});
 
 // ── Tema guardado en config.json ───────────────────────────────────────────
 // Al iniciar se aplica con el mismo toggleTheme() del botón (solo si difiere).
