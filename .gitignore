@@ -30,3 +30,8 @@ config.json
 
 # Instaladores de WebView2 (los descarga build.ps1 / se agregan a mano)
 tools/webview2/*.exe
+
+# Herramientas pesadas que se agregan a mano (OCCT.exe pesa ~197 MB, más que
+# el límite de 100 MB de GitHub). build.ps1 las copia a dist\tools.
+tools/stress/
+tools/antivirus/
