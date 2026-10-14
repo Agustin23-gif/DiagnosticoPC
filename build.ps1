@@ -26,7 +26,18 @@ if (-not (Test-Path $webview2Path)) {
     }
 }
 
+# Instalador offline de WebView2 (~200 MB, se agrega a mano): NO se embebe,
+# --onefile lo extraería a %TEMP% en cada arranque. Se aparta mientras compila
+# PyInstaller y después se copia solo al lado del .exe (dist\tools\webview2).
+$wv2Offline    = "tools\webview2\MicrosoftEdgeWebView2RuntimeInstallerX64.exe"
+$wv2OfflineTmp = "_wv2_offline_tmp"
+if (Test-Path $wv2Offline) {
+    New-Item -ItemType Directory -Force -Path $wv2OfflineTmp | Out-Null
+    Move-Item $wv2Offline $wv2OfflineTmp -Force
+}
+
 Write-Host "  [2/3] Compilando ejecutable (puede tardar 2-3 minutos)..." -ForegroundColor Cyan
+try {
 python -m PyInstaller `
     --onefile `
     --windowed `
@@ -46,6 +57,14 @@ python -m PyInstaller `
     --clean `
     --noconfirm `
     "diagnostico_pc.py"
+} finally {
+    # Devolver el instalador offline a tools\webview2 aunque la compilación falle
+    $tmpFile = Join-Path $wv2OfflineTmp "MicrosoftEdgeWebView2RuntimeInstallerX64.exe"
+    if (Test-Path $tmpFile) {
+        Move-Item $tmpFile $wv2Offline -Force
+        Remove-Item $wv2OfflineTmp -Force -ErrorAction SilentlyContinue
+    }
+}
 
 Write-Host "  [3/3] Verificando resultado..." -ForegroundColor Cyan
 $exe = "dist\PC House Diagnostico.exe"
@@ -54,6 +73,11 @@ if (Test-Path $exe) {
         New-Item -ItemType Directory -Force -Path "dist\tools\webview2" | Out-Null
         Copy-Item $webview2Path "dist\tools\webview2\" -Force
         Write-Host "  WebView2 bootstrapper copiado a dist\tools\webview2" -ForegroundColor Green
+    }
+    if (Test-Path $wv2Offline) {
+        New-Item -ItemType Directory -Force -Path "dist\tools\webview2" | Out-Null
+        Copy-Item $wv2Offline "dist\tools\webview2\" -Force
+        Write-Host "  WebView2 instalador offline copiado a dist\tools\webview2" -ForegroundColor Green
     }
     $mb = [math]::Round((Get-Item $exe).Length / 1MB, 1)
     Write-Host ""
