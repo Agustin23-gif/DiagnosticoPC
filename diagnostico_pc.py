@@ -429,6 +429,143 @@ class Api:
     def get_disk_detail(self, disk_name):
         return json.dumps(self._build_disk_detail(disk_name, self._disk_health_cache))
 
+    # ── Test de Velocidad de disco ─────────────────────────────────────────
+    _speed_phase = ""
+
+    def get_disk_usage_percent(self, drive_letter):
+        # Uso = 100 - % inactivo (lo mismo que "Tiempo activo" del Administrador
+        # de Tareas). Clase WMI en vez de Get-Counter: los nombres de contador
+        # vienen traducidos y '\PhysicalDisk(*)\% Disk Time' falla en Windows en español.
+        try:
+            drive = str(drive_letter or "").strip().rstrip("\\").rstrip(":").upper()
+            ps = (
+                "$null = Get-CimInstance Win32_PerfFormattedData_PerfDisk_PhysicalDisk; "
+                "Start-Sleep -Milliseconds 1000; "
+                "Get-CimInstance Win32_PerfFormattedData_PerfDisk_PhysicalDisk | "
+                "Where-Object { $_.Name -ne '_Total' } | "
+                "Select-Object Name, PercentIdleTime | ConvertTo-Json -Compress"
+            )
+            r = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+                capture_output=True, text=True, timeout=15, **_NWIN,
+            )
+            if r.returncode == 0 and r.stdout.strip():
+                raw = json.loads(r.stdout.strip())
+                items = [raw] if isinstance(raw, dict) else raw
+                for it in items:
+                    tokens = str(it.get("Name") or "").upper().split()
+                    if drive and (drive + ":") in tokens:
+                        uso = 100 - float(it.get("PercentIdleTime") or 0)
+                        return json.dumps({"usage_pct": round(max(0.0, min(uso, 100.0)), 1)})
+                max_uso = max([100 - float(it.get("PercentIdleTime") or 0) for it in items], default=0)
+                return json.dumps({"usage_pct": round(max(0.0, min(max_uso, 100.0)), 1)})
+            return json.dumps({"usage_pct": 0})
+        except Exception as e:
+            return json.dumps({"error": str(e), "usage_pct": 0})
+
+    def get_disk_speed_phase(self):
+        return json.dumps({"phase": Api._speed_phase})
+
+    @staticmethod
+    def _speed_io(path, write, total, block):
+        # E/S sin caché de Windows (FILE_FLAG_NO_BUFFERING): si no, la lectura
+        # del archivo recién escrito sale de la RAM y da varios GB/s en cualquier disco.
+        import ctypes, time
+        from ctypes import wintypes
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.CreateFileW.restype = wintypes.HANDLE
+        k32.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
+                                    wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+        k32.VirtualAlloc.restype = ctypes.c_void_p
+        k32.VirtualAlloc.argtypes = [ctypes.c_void_p, ctypes.c_size_t, wintypes.DWORD, wintypes.DWORD]
+        k32.VirtualFree.argtypes = [ctypes.c_void_p, ctypes.c_size_t, wintypes.DWORD]
+        k32.WriteFile.argtypes = [wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD,
+                                  ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p]
+        k32.ReadFile.argtypes = k32.WriteFile.argtypes
+        k32.CloseHandle.argtypes = [wintypes.HANDLE]
+        INVALID = ctypes.c_void_p(-1).value
+        NO_BUF, WRITE_THROUGH = 0x20000000, 0x80000000
+        if write:
+            h = k32.CreateFileW(path, 0x40000000, 0, None, 2, NO_BUF | WRITE_THROUGH, None)
+        else:
+            h = k32.CreateFileW(path, 0x80000000, 1, None, 3, NO_BUF | 0x08000000, None)
+        if h in (None, INVALID):
+            raise OSError(ctypes.get_last_error(), "No se pudo abrir el archivo de prueba")
+        buf = k32.VirtualAlloc(None, block, 0x3000, 0x04)  # alineado a página
+        try:
+            if write:
+                ctypes.memmove(buf, os.urandom(block), block)
+            n = wintypes.DWORD(0)
+            done = 0
+            t0 = time.perf_counter()
+            while done < total:
+                fn = k32.WriteFile if write else k32.ReadFile
+                if not fn(h, buf, block, ctypes.byref(n), None) or n.value == 0:
+                    raise OSError(ctypes.get_last_error(), "Error de E/S durante el test")
+                done += n.value
+            secs = max(time.perf_counter() - t0, 0.001)
+            return round(done / secs / 1024 / 1024, 1)
+        finally:
+            k32.VirtualFree(buf, 0, 0x8000)
+            k32.CloseHandle(h)
+
+    def run_disk_speed_test(self, drive_letter):
+        try:
+            drive = str(drive_letter or "").strip().rstrip("\\").rstrip(":").upper()
+            if len(drive) != 1 or not drive.isalpha():
+                return json.dumps({"error": "Unidad no válida"})
+            BLOCK_SIZE = 1024 * 1024          # 1 MB
+            TEST_SIZE  = 256 * 1024 * 1024    # 256 MB
+            try:
+                libre = psutil.disk_usage(f"{drive}:\\").free
+            except Exception:
+                return json.dumps({"error": f"No se puede acceder a la unidad {drive}:"})
+            if libre < TEST_SIZE + 256 * 1024 * 1024:
+                return json.dumps({"error": f"Espacio libre insuficiente en {drive}: (se necesitan 512 MB)"})
+            test_path = f"{drive}:\\~speedtest_tmp.bin"
+            results = {}
+            try:
+                Api._speed_phase = "write"
+                try:
+                    results["write_mb_s"] = Api._speed_io(test_path, True, TEST_SIZE, BLOCK_SIZE)
+                except Exception as e:
+                    results["write_mb_s"] = 0
+                    results["write_error"] = str(e)
+                Api._speed_phase = "read"
+                try:
+                    results["read_mb_s"] = Api._speed_io(test_path, False, TEST_SIZE, BLOCK_SIZE)
+                except Exception as e:
+                    results["read_mb_s"] = 0
+                    results["read_error"] = str(e)
+            finally:
+                Api._speed_phase = ""
+                try:
+                    if os.path.exists(test_path):
+                        os.remove(test_path)
+                except Exception:
+                    pass
+            if results.get("write_error") and results.get("read_error"):
+                return json.dumps({"error": results["write_error"]})
+
+            read = results.get("read_mb_s", 0)
+            if read > 400:
+                health, estado, tipo = min(95 + (read - 400) / 100, 100), "excelente", "SSD"
+            elif read > 150:
+                health, estado, tipo = 60 + (read - 150) / 8, "reducido", "SSD"
+            elif read > 80:
+                health, estado, tipo = 60 + (read - 80) / 2.3, "normal", "HDD"
+            elif read > 30:
+                health, estado, tipo = 20 + (read - 30) / 1, "lento", "HDD"
+            else:
+                health, estado, tipo = max(read / 3, 5), "critico", "HDD/SSD"
+            results["health_pct"] = round(health, 0)
+            results["estado"]     = estado
+            results["tipo_disco"] = tipo
+            return json.dumps(results)
+        except Exception as e:
+            Api._speed_phase = ""
+            return json.dumps({"error": str(e)})
+
     @staticmethod
     def _build_disk_detail(disk_name, health_cache):
         disk_num = disk_type = disk_health = disk_size = None
@@ -4479,6 +4616,18 @@ html[data-theme="dark"] .wu-bsod-badge { color:#F87171; }
 .wu-bsod-line { font-size:12.5px; line-height:1.5; color:var(--txt); word-break:break-word; }
 .wu-bsod-sep { height:1px; background:var(--border-card); margin:8px 0; }
 html[data-theme="dark"] .wu-bsod-sep { background:#1A2540; }
+/* Test de Velocidad de disco */
+.tv-sec-lbl { font-size:11px; font-weight:700; letter-spacing:.5px; text-transform:uppercase; color:var(--txt2); margin-bottom:6px; }
+.tv-row { display:flex; align-items:center; gap:12px; margin-bottom:14px; }
+.tv-track { flex:1; height:10px; border-radius:6px; background:var(--bar-track); overflow:hidden; }
+.tv-fill { height:100%; border-radius:6px; width:0%; transition:width .6s ease; }
+.tv-val { font-family:var(--font-mono); font-size:14px; font-weight:700; color:var(--txt); min-width:96px; text-align:right; white-space:nowrap; }
+.tv-sep { height:1px; background:var(--border-card); margin:6px 0 16px; }
+html[data-theme="dark"] .tv-sep { background:#1A2540; }
+.tv-badge { display:inline-block; font-family:var(--font-mono); font-size:22px; font-weight:800; padding:6px 16px; border-radius:12px; margin-bottom:10px; }
+.tv-msg { font-size:13px; line-height:1.55; color:var(--txt); }
+.tv-note { font-size:12px; line-height:1.5; color:var(--txt2); margin-top:12px; padding:10px 12px; border-radius:8px; background:rgba(26,86,196,.08); }
+.tv-smart-btn { width:100%; margin-top:16px; padding:11px; border-radius:10px; font-size:14px; }
 .hist-empty { text-align:center; background:rgba(255,255,255,0.15); border:1px solid rgba(255,255,255,0.25); border-radius:10px; padding:16px 14px; color:white; font-size:13px; line-height:1.6; }
 #toast-estado { animation: slideInRight 0.3s ease; border: 1px solid rgba(255,255,255,0.2); }
 @keyframes slideInRight {
@@ -4671,6 +4820,41 @@ html[data-theme="dark"] .wu-bsod-sep { background:#1A2540; }
   <div class="modal-card">
     <button class="modal-x" onclick="closeDiskModal()">&#x2715;</button>
     <div id="modalContent"></div>
+  </div>
+</div>
+
+<div id="tvModal" class="modal-ov" style="z-index:1000" onclick="cerrarModalTestVelocidadOv(event)">
+  <div class="chk-modal-card" style="max-width:500px;pointer-events:auto;z-index:1001">
+    <button class="modal-x" onclick="cerrarModalTestVelocidad()">&#x2715;</button>
+    <div id="tvTitulo" style="font-size:16px;font-weight:700;margin-bottom:4px;color:var(--txt);padding-right:28px">&#x26A1; Test de Velocidad</div>
+    <div id="tvSub" style="font-size:12px;color:var(--txt2);margin-bottom:16px">Lectura y escritura secuencial con un archivo temporal de 256 MB</div>
+
+    <!-- Fase 1: uso actual del disco -->
+    <div id="tvUsoSection">
+      <div class="tv-sec-lbl">Uso actual del disco</div>
+      <div class="tv-row">
+        <div class="tv-track"><div class="tv-fill" id="tvUsoFill"></div></div>
+        <div class="tv-val" id="tvUsoVal">&hellip;</div>
+      </div>
+      <div id="tvUsoWarn" style="display:none;font-size:13px;font-weight:600;color:#EF4444;margin:-6px 0 14px">&#x26A0;&#xFE0F; Disco al 100% de uso</div>
+    </div>
+
+    <div id="tvStartSection">
+      <button class="btn btn-p" style="width:100%;padding:11px;border-radius:10px;font-size:14px" onclick="correrTestVelocidad(_tvLetra)">Iniciar Test</button>
+    </div>
+
+    <!-- Fase 2: midiendo -->
+    <div id="tvRunning" style="display:none;text-align:center;padding:24px 0">
+      <div style="width:40px;height:40px;border:3px solid var(--bar-track);border-top-color:var(--brand);border-radius:50%;animation:spin .8s linear infinite;margin:0 auto 14px"></div>
+      <div id="tvRunningTxt" style="font-size:14px;color:var(--txt2)">Preparando test&hellip;</div>
+      <div style="font-size:11px;color:var(--txt2);margin-top:6px;opacity:.8">En discos mec&aacute;nicos lentos puede tardar hasta 40 segundos</div>
+    </div>
+
+    <!-- Fase 3: resultado -->
+    <div id="tvResult" style="display:none"></div>
+    <div id="tvRepeatSection" style="display:none;margin-top:14px">
+      <button class="btn btn-s" style="width:100%;padding:10px;border-radius:10px" onclick="correrTestVelocidad(_tvLetra)">&#x1F504; Repetir Test</button>
+    </div>
   </div>
 </div>
 
@@ -8264,6 +8448,186 @@ function renderizarBSOD(eventos) {
       + '<div class="wu-bsod-line" style="margin-top:4px"><b>Recomendaci&oacute;n:</b> ' + _escHtml(ev.recomendacion) + '</div>'
       + '</div>';
   }).join(''));
+}
+
+// ── Test de Velocidad de disco (botón dentro del modal SMART) ──────────────
+// El botón se agrega con un MutationObserver sobre #modalContent para no tocar
+// _renderModalDetail(): aparece cuando termina de cargar el detalle del disco.
+var _tvLetra = null, _tvNombre = '', _tvUso = null, _tvReqId = 0;
+var _tvCorriendo = false, _tvLetraEnCurso = null, _tvPollTmr = null;
+
+function _tvAgregarBotonSmart() {
+  var cont = document.getElementById('modalContent');
+  if (!cont || !cont.querySelector('.modal-hdr') || cont.querySelector('.modal-loading')) return;
+  if (document.getElementById('tvSmartBtn')) return;
+  var tituloEl = cont.querySelector('.modal-title');
+  var nombre = tituloEl ? tituloEl.textContent : 'Disco';
+  var letra = '';
+  var mounts = cont.querySelectorAll('.mpart-m');
+  for (var i = 0; i < mounts.length; i++) {
+    var m = (mounts[i].textContent || '').trim();
+    if (/^[A-Za-z]:/.test(m)) { letra = m.charAt(0).toUpperCase(); break; }
+  }
+  var btn = document.createElement('button');
+  btn.id = 'tvSmartBtn';
+  btn.className = 'btn btn-p tv-smart-btn';
+  btn.dataset.nombre = nombre;
+  btn.dataset.letra = letra;
+  if (letra) {
+    btn.innerHTML = `&#x26A1; Test de Velocidad <span style="opacity:.75;font-weight:500">(${letra}:)</span>`;
+    btn.setAttribute('onclick', 'iniciarTestVelocidad(this.dataset.nombre, this.dataset.letra)');
+  } else {
+    btn.innerHTML = '&#x26A1; Test de Velocidad';
+    btn.disabled = true;
+    btn.title = 'El disco no tiene ninguna unidad con letra asignada';
+  }
+  cont.appendChild(btn);
+}
+new MutationObserver(_tvAgregarBotonSmart).observe(document.getElementById('modalContent'), {childList: true});
+
+function _tvColorUso(p) { return p > 80 ? '#EF4444' : p >= 50 ? '#F59E0B' : '#10B981'; }
+
+function iniciarTestVelocidad(nombreDisco, letraDisco) {
+  if (!letraDisco) return;
+  var reqId = ++_tvReqId;
+  _tvNombre = nombreDisco || 'Disco';
+  _tvLetra = letraDisco;
+  _tvUso = null;
+  document.getElementById('tvTitulo').textContent = '⚡ Test de Velocidad — ' + _tvNombre;
+  document.getElementById('tvSub').textContent = `Unidad ${letraDisco}: · lectura y escritura secuencial con un archivo temporal de 256 MB`;
+  document.getElementById('tvUsoFill').style.width = '0%';
+  document.getElementById('tvUsoVal').textContent = 'Midiendo…';
+  document.getElementById('tvUsoWarn').style.display = 'none';
+  document.getElementById('tvResult').style.display = 'none';
+  document.getElementById('tvRepeatSection').style.display = 'none';
+  if (_tvCorriendo) {
+    // Ya hay un test corriendo (se cerró el modal sin esperar): mostrar el spinner
+    document.getElementById('tvStartSection').style.display = 'none';
+    document.getElementById('tvRunning').style.display = 'block';
+  } else {
+    document.getElementById('tvRunning').style.display = 'none';
+    document.getElementById('tvStartSection').style.display = 'block';
+    document.querySelector('#tvStartSection button').disabled = true;
+  }
+  document.getElementById('tvModal').classList.add('open');
+  if (!window.pywebview || !window.pywebview.api) return;
+  window.pywebview.api.get_disk_usage_percent(letraDisco).then(function(raw) {
+    if (reqId !== _tvReqId) return;
+    var d = JSON.parse(raw);
+    var p = Math.max(0, Math.min(100, Number(d.usage_pct) || 0));
+    _tvUso = p;
+    var fill = document.getElementById('tvUsoFill');
+    fill.style.width = p + '%';
+    fill.style.background = _tvColorUso(p);
+    document.getElementById('tvUsoVal').textContent = d.error ? 'N/D' : Math.round(p) + '%';
+    document.getElementById('tvUsoWarn').style.display = p >= 99 ? 'block' : 'none';
+    document.querySelector('#tvStartSection button').disabled = false;
+  }).catch(function() {
+    if (reqId !== _tvReqId) return;
+    document.getElementById('tvUsoVal').textContent = 'N/D';
+    document.querySelector('#tvStartSection button').disabled = false;
+  });
+}
+
+function cerrarModalTestVelocidad() {
+  _tvReqId++;
+  document.getElementById('tvModal').classList.remove('open');
+}
+
+function cerrarModalTestVelocidadOv(e) {
+  if (e.target === document.getElementById('tvModal')) cerrarModalTestVelocidad();
+}
+
+function _tvPollFase() {
+  if (!window.pywebview || !window.pywebview.api) return;
+  window.pywebview.api.get_disk_speed_phase().then(function(raw) {
+    var f = JSON.parse(raw).phase;
+    var txt = document.getElementById('tvRunningTxt');
+    if (f === 'write') txt.textContent = 'Midiendo velocidad de escritura…';
+    else if (f === 'read') txt.textContent = 'Midiendo velocidad de lectura…';
+  }).catch(function() {});
+}
+
+function correrTestVelocidad(letraDisco) {
+  if (_tvCorriendo || !letraDisco || !window.pywebview || !window.pywebview.api) return;
+  _tvCorriendo = true;
+  _tvLetraEnCurso = letraDisco;
+  var uso = _tvUso;
+  document.getElementById('tvStartSection').style.display = 'none';
+  document.getElementById('tvRepeatSection').style.display = 'none';
+  document.getElementById('tvResult').style.display = 'none';
+  document.getElementById('tvRunningTxt').textContent = 'Preparando test…';
+  document.getElementById('tvRunning').style.display = 'block';
+  if (_tvPollTmr) clearInterval(_tvPollTmr);
+  _tvPollTmr = setInterval(_tvPollFase, 500);
+  function terminar(data) {
+    _tvCorriendo = false;
+    if (_tvPollTmr) { clearInterval(_tvPollTmr); _tvPollTmr = null; }
+    // Si el modal se cerró o se abrió para otro disco, no pisar lo que se ve
+    if (!document.getElementById('tvModal').classList.contains('open') || _tvLetra !== letraDisco) return;
+    document.getElementById('tvRunning').style.display = 'none';
+    mostrarResultadoVelocidad(data, uso);
+  }
+  window.pywebview.api.run_disk_speed_test(letraDisco).then(function(raw) {
+    terminar(JSON.parse(raw));
+  }).catch(function() {
+    terminar({error: 'No se pudo completar el test'});
+  });
+}
+
+function mostrarResultadoVelocidad(data, usoActual) {
+  var el = document.getElementById('tvResult');
+  document.getElementById('tvRepeatSection').style.display = 'block';
+  el.style.display = 'block';
+  if (!data || data.error) {
+    el.innerHTML = `<div class="tv-note" style="background:rgba(239,68,68,.10);color:#EF4444;font-size:13px;margin-top:0">&#x274C; ${(data && data.error) || 'Error desconocido'}</div>`;
+    return;
+  }
+  var read = Number(data.read_mb_s) || 0, write = Number(data.write_mb_s) || 0;
+  var escala = read > 150 ? 500 : 150;
+  function barra(v) { return Math.max(0, Math.min(100, v / escala * 100)).toFixed(1); }
+  var health = Math.round(Number(data.health_pct) || 0);
+  var color = health >= 70 ? '#10B981' : health >= 40 ? '#F59E0B' : '#EF4444';
+  var msgs = {
+    excelente: [`✅ SSD en excelente estado (${health}%)`, 'Este SSD opera a velocidad óptima.'],
+    reducido:  [`⚠️ SSD con rendimiento reducido (${health}%)`, 'El SSD está por debajo de su velocidad normal.', 'Recomendación: Verificar espacio libre y estado SMART.'],
+    normal:    [`✅ HDD en buen estado (${health}%)`, 'Velocidad normal para un disco mecánico.'],
+    lento:     [`⚠️ HDD lento (${health}%)`, 'El disco mecánico está por debajo de lo normal.', 'Recomendación: Desfragmentar el disco y verificar SMART.'],
+    critico:   [`🔴 Disco en estado crítico (${health}%)`, 'Velocidad extremadamente baja — riesgo de fallo inminente.', 'Recomendación: Hacer backup URGENTE y reemplazar el disco.']
+  };
+  var m = msgs[data.estado] || msgs.critico;
+  var msgHtml = `<div class="tv-msg" style="font-weight:700;font-size:14px;margin-bottom:4px">${m[0]}</div>`;
+  for (var i = 1; i < m.length; i++) msgHtml += `<div class="tv-msg">${m[i]}</div>`;
+  var errHtml = '';
+  if (data.read_error)  errHtml += `<div class="tv-note" style="color:#EF4444">No se pudo medir la lectura: ${data.read_error}</div>`;
+  if (data.write_error) errHtml += `<div class="tv-note" style="color:#EF4444">No se pudo medir la escritura: ${data.write_error}</div>`;
+  var notaUso = (usoActual !== null && usoActual !== undefined && usoActual >= 99)
+    ? '<div class="tv-note">&#x2139;&#xFE0F; Este disco aparece al 100% de uso en el Administrador de Tareas, lo que puede indicar que es el cuello de botella del sistema.</div>'
+    : '';
+  el.innerHTML = `
+    <div class="tv-sec-lbl">Lectura secuencial</div>
+    <div class="tv-row">
+      <div class="tv-track"><div class="tv-fill" id="tvReadFill" style="background:linear-gradient(90deg,#1A56C4,#00C9A7)"></div></div>
+      <div class="tv-val">${read.toFixed(1)} MB/s</div>
+    </div>
+    <div class="tv-sec-lbl">Escritura secuencial</div>
+    <div class="tv-row">
+      <div class="tv-track"><div class="tv-fill" id="tvWriteFill" style="background:linear-gradient(90deg,#1A56C4,#00C9A7)"></div></div>
+      <div class="tv-val">${write.toFixed(1)} MB/s</div>
+    </div>
+    <div style="font-size:11px;color:var(--txt2);margin:-6px 0 12px">Escala de las barras: ${escala} MB/s (${read > 150 ? 'SSD' : 'HDD'})</div>
+    <div class="tv-sep"></div>
+    <div class="tv-sec-lbl">Diagnóstico del disco</div>
+    <div class="tv-badge" style="background:${color}22;color:${color}">${health}%</div>
+    ${msgHtml}
+    ${errHtml}
+    ${notaUso}`;
+  // Animar las barras después de insertarlas
+  setTimeout(function() {
+    var r = document.getElementById('tvReadFill'), w = document.getElementById('tvWriteFill');
+    if (r) r.style.width = barra(read) + '%';
+    if (w) w.style.width = barra(write) + '%';
+  }, 30);
 }
 
 // ── Tema guardado en config.json ───────────────────────────────────────────
