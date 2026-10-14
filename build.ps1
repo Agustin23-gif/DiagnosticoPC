@@ -36,9 +36,9 @@ if (Test-Path $wv2Offline) {
     Move-Item $wv2Offline $wv2OfflineTmp -Force
 }
 
-# stress\ (~270 MB) y antivirus\ tampoco se embeben: el código los busca solo
-# al lado del .exe. Se apartan mientras compila y después se copian a dist\tools.
-$externos    = @("stress", "antivirus")
+# office\, stress\ (~270 MB) y antivirus\ tampoco se embeben: el código los busca
+# solo al lado del .exe. Se apartan mientras compila y después se copian a dist\tools.
+$externos    = @("office", "stress", "antivirus")
 $externosTmp = "_tools_externos_tmp"
 New-Item -ItemType Directory -Force -Path $externosTmp | Out-Null
 foreach ($d in $externos) {
@@ -96,7 +96,7 @@ if (Test-Path $exe) {
     # Herramientas que el código busca al lado del .exe (_office_base_path):
     # office\ (deploy_office), stress\ y antivirus\. robocopy /E solo copia
     # lo nuevo o cambiado y no borra lo que las herramientas generen en dist.
-    foreach ($d in @("office") + $externos) {
+    foreach ($d in $externos) {
         if (Test-Path "tools\$d") {
             robocopy "tools\$d" "dist\tools\$d" /E /NJH /NJS /NFL /NDL /NP | Out-Null
             if ($LASTEXITCODE -ge 8) {
