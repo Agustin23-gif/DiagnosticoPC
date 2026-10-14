@@ -2621,6 +2621,170 @@ class Api:
         except Exception as e:
             return json.dumps({"error": str(e)})
 
+    # ── BSOD (pestaña de Windows al Día) ──────────────────────────────
+    # Dos fuentes, cruzadas por nombre de volcado para no duplicar:
+    #  - Evento 1001 de WER-SystemErrorReporting (log System): Windows lo
+    #    escribe al reiniciar tras un pantallazo. Se leen las Properties y no
+    #    el Message (viene traducido): [0] = "0x000000d1 (...)", [1] = volcado.
+    #  - Minidumps de %SystemRoot%\Minidump: el código está en el encabezado,
+    #    sirve aunque el log ya haya rotado. Leerlos requiere admin.
+    # Los WER 1001 del log Application NO son BSOD (son APPCRASH de programas).
+    # El driver causante no figura en ninguna fuente (hace falta WinDbg):
+    # solo se informa cuando el código ya lo implica.
+    _BSOD_DB = {
+        0x0A:  ("IRQL_NOT_LESS_OR_EQUAL", "",
+                "Error de driver intentando acceder memoria protegida.",
+                "Actualizá todos los drivers. Revisá hardware nuevo instalado recientemente."),
+        0x19:  ("BAD_POOL_HEADER", "",
+                "Se corrompió un bloque de memoria del kernel.",
+                "Ejecutá Windows Memory Diagnostic y actualizá los drivers. Desinstalá antivirus de terceros si persiste."),
+        0x1A:  ("MEMORY_MANAGEMENT", "",
+                "Error grave en el gestor de memoria.",
+                "Ejecutá Windows Memory Diagnostic. Probable fallo de RAM."),
+        0x1E:  ("KMODE_EXCEPTION_NOT_HANDLED", "",
+                "Un driver generó una excepción que el sistema no pudo manejar.",
+                "Actualizá los drivers instalados recientemente. Si empezó tras instalar hardware o software nuevo, desinstalalo."),
+        0x24:  ("NTFS_FILE_SYSTEM", "ntfs.sys",
+                "Error en el sistema de archivos NTFS.",
+                "Ejecutá chkdsk /f /r en el disco afectado. Puede indicar disco dañado."),
+        0x3B:  ("SYSTEM_SERVICE_EXCEPTION", "",
+                "Un servicio del sistema generó una excepción no controlada.",
+                "Actualizá Windows y drivers. Desinstalá antivirus de terceros si persiste."),
+        0x50:  ("PAGE_FAULT_IN_NONPAGED_AREA", "",
+                "El sistema intentó acceder a memoria que no existe o fue eliminada.",
+                "Ejecutá chkdsk y Windows Memory Diagnostic. Puede indicar fallo de RAM o disco."),
+        0x7B:  ("INACCESSIBLE_BOOT_DEVICE", "",
+                "Windows perdió acceso al disco de arranque durante el inicio.",
+                "Revisá el modo SATA en la BIOS (AHCI/RAID) y los cables. Ejecutá chkdsk: puede indicar disco dañado."),
+        0x7E:  ("SYSTEM_THREAD_EXCEPTION_NOT_HANDLED", "",
+                "Un proceso del sistema generó una excepción no controlada, casi siempre por un driver.",
+                "Actualizá los drivers de video, red y chipset. Probá en modo seguro para identificar el driver."),
+        0x9F:  ("DRIVER_POWER_STATE_FAILURE", "",
+                "Un driver no respondió al cambiar de estado de energía (suspensión, hibernación).",
+                "Actualizá los drivers de red, video y chipset. Si persiste, desactivá el inicio rápido."),
+        0xC2:  ("BAD_POOL_CALLER", "",
+                "Un driver hizo una solicitud de memoria inválida.",
+                "Actualizá los drivers instalados recientemente y revisá la RAM."),
+        0xD1:  ("DRIVER_IRQL_NOT_LESS_OR_EQUAL", "",
+                "Un driver intentó acceder a memoria en un nivel de interrupción incorrecto.",
+                "Actualizá o reinstalá los drivers, especialmente de red y video. Revisá también la RAM."),
+        0xEF:  ("CRITICAL_PROCESS_DIED", "",
+                "Un proceso crítico del sistema dejó de funcionar inesperadamente.",
+                "Ejecutá SFC /scannow. Puede indicar corrupción del sistema."),
+        0xF4:  ("CRITICAL_OBJECT_TERMINATION", "",
+                "Un proceso crítico del sistema terminó inesperadamente.",
+                "Revisá la salud del disco (chkdsk y SMART) y ejecutá SFC /scannow."),
+        0x116: ("VIDEO_TDR_FAILURE", "Driver de video",
+                "El driver de video dejó de responder y Windows no pudo recuperarlo.",
+                "Reinstalá el driver de video desde la web del fabricante. Revisá la temperatura de la GPU con el Termómetro."),
+        0x124: ("WHEA_UNCORRECTABLE_ERROR", "",
+                "Error de hardware no corregible detectado por Windows.",
+                "Revisá temperatura del CPU y GPU. Puede indicar fallo de hardware físico."),
+        0x133: ("DPC_WATCHDOG_VIOLATION", "",
+                "Un proceso de hardware tardó demasiado en responder.",
+                "Actualizá drivers de SSD/NVMe y chipset. Común en SSD con drivers desactualizados."),
+        0x139: ("KERNEL_SECURITY_CHECK_FAILURE", "",
+                "Una estructura de datos crítica del kernel fue corrompida.",
+                "Ejecutá SFC /scannow y DISM. Puede requerir reinstalación de Windows."),
+    }
+
+    @staticmethod
+    def _bsod_code_from_dump(path):
+        """Código de bugcheck del encabezado de un volcado de kernel, o None.
+        DUMP_HEADER64 ("PAGEDU64"): BugCheckCode en 0x38; DUMP_HEADER32 ("PAGEDUMP"): en 0x28."""
+        try:
+            with open(path, "rb") as f:
+                head = f.read(0x40)
+            if head[:8] == b"PAGEDU64":
+                return int.from_bytes(head[0x38:0x3C], "little")
+            if head[:8] == b"PAGEDUMP":
+                return int.from_bytes(head[0x28:0x2C], "little")
+        except Exception:
+            pass
+        return None
+
+    def get_bsod_events(self):
+        import re
+        try:
+            ps_cmd = (
+                "[Console]::OutputEncoding=[Text.Encoding]::UTF8;"
+                "@(Get-WinEvent -FilterHashtable @{LogName='System';"
+                "ProviderName='Microsoft-Windows-WER-SystemErrorReporting';Id=1001}"
+                " -MaxEvents 20 -ErrorAction SilentlyContinue)|ForEach-Object{[pscustomobject]@{"
+                "ts=([DateTimeOffset]$_.TimeCreated).ToUnixTimeSeconds();"
+                "time=$_.TimeCreated.ToString('dd/MM/yyyy HH:mm');"
+                "code=[string]$_.Properties[0].Value;"
+                "dump=[string]$_.Properties[1].Value}}|"
+                "ConvertTo-Json -Compress"
+            )
+            r = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_cmd],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=20, **_NWIN,
+            )
+            # Clave: nombre del minidump (minúsculas). Eventos sin minidump propio
+            # (MEMORY.DMP se sobrescribe en cada pantallazo) llevan clave única.
+            crashes = {}
+            if r.stdout.strip():
+                raw = json.loads(r.stdout.strip())
+                for i, item in enumerate([raw] if isinstance(raw, dict) else raw):
+                    m = re.search(r"0x([0-9A-Fa-f]{1,8})", item.get("code") or "")
+                    dump = os.path.basename(item.get("dump") or "").lower()
+                    key = dump if dump.endswith(".dmp") and dump != "memory.dmp" else f"evt-{i}"
+                    crashes[key] = {
+                        "ts":    int(item.get("ts") or 0),
+                        "fecha": item.get("time") or "",
+                        "code":  int(m.group(1), 16) if m else None,
+                    }
+
+            minidump_dir = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "Minidump")
+            try:
+                nombres = [n for n in os.listdir(minidump_dir) if n.lower().endswith(".dmp")]
+            except OSError:
+                nombres = []
+            for n in nombres:
+                path = os.path.join(minidump_dir, n)
+                code = Api._bsod_code_from_dump(path)
+                previo = crashes.get(n.lower())
+                if previo:
+                    if previo["code"] is None:
+                        previo["code"] = code
+                    continue
+                try:
+                    mtime = os.path.getmtime(path)
+                except OSError:
+                    continue
+                crashes[n.lower()] = {
+                    "ts":    int(mtime),
+                    "fecha": datetime.datetime.fromtimestamp(mtime).strftime("%d/%m/%Y %H:%M"),
+                    "code":  code,
+                }
+
+            if not crashes:
+                return json.dumps({"sin_bsod": True})
+
+            events = []
+            for c in sorted(crashes.values(), key=lambda x: x["ts"], reverse=True)[:10]:
+                code = c["code"]
+                nombre, archivo, desc, rec = Api._BSOD_DB.get(code, (
+                    "", "",
+                    "Error crítico del sistema que provocó un pantallazo azul.",
+                    "Actualizá Windows y los drivers. Si se repite, buscá el código "
+                    "en Google y revisá el hardware (RAM, disco, temperaturas).",
+                ))
+                events.append({
+                    "fecha":         c["fecha"],
+                    "codigo":        nombre or ("Código no reconocido" if code is not None
+                                                else "Código no disponible"),
+                    "hex":           f"0x{code:08X}" if code is not None else "",
+                    "archivo":       archivo,
+                    "descripcion":   desc,
+                    "recomendacion": rec,
+                })
+            return json.dumps(events, ensure_ascii=False)
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
     # ── Optimizar Windows (WinUtil) ───────────────────────────────────
     def launch_winutil(self):
         try:
@@ -4307,6 +4471,14 @@ html[data-theme="dark"] .wu-step-err { color:#F87171; }
 html[data-theme="dark"] .wu-evt .wu-evt-badge         { color:#93C5FD; }
 html[data-theme="dark"] .wu-evt.error .wu-evt-badge   { color:#F87171; }
 html[data-theme="dark"] .wu-evt.warning .wu-evt-badge { color:#FBBF24; }
+.wu-bsod { background:var(--surface-card); border:1px solid var(--border-card); border-left:3px solid #EF4444; border-radius:8px; padding:12px 16px; margin-bottom:8px; }
+html[data-theme="dark"] .wu-bsod { background:#080E1C; border-color:#1A2540; border-left-color:#EF4444; }
+.wu-bsod-top { display:flex; align-items:center; gap:8px; margin-bottom:8px; }
+.wu-bsod-badge { font-size:11px; font-weight:700; padding:2px 8px; border-radius:6px; white-space:nowrap; background:rgba(239,68,68,.12); color:#B91C1C; }
+html[data-theme="dark"] .wu-bsod-badge { color:#F87171; }
+.wu-bsod-line { font-size:12.5px; line-height:1.5; color:var(--txt); word-break:break-word; }
+.wu-bsod-sep { height:1px; background:var(--border-card); margin:8px 0; }
+html[data-theme="dark"] .wu-bsod-sep { background:#1A2540; }
 .hist-empty { text-align:center; background:rgba(255,255,255,0.15); border:1px solid rgba(255,255,255,0.25); border-radius:10px; padding:16px 14px; color:white; font-size:13px; line-height:1.6; }
 #toast-estado { animation: slideInRight 0.3s ease; border: 1px solid rgba(255,255,255,0.2); }
 @keyframes slideInRight {
@@ -5207,6 +5379,16 @@ html[data-theme="dark"] .wu-evt.warning .wu-evt-badge { color:#FBBF24; }
     <div style="display:flex;gap:8px;margin-bottom:16px">
       <button id="wuTabActualizaciones" class="desc-tab active" onclick="cambiarPestañaWindowsAlDia('actualizaciones')">&#x1F504; Actualizaciones</button>
       <button id="wuTabLog" class="desc-tab" onclick="cambiarPestañaWindowsAlDia('log')">&#x1F4CB; Log de Eventos</button>
+      <button id="wuTabBSOD" class="desc-tab" onclick="mostrarPestañaBSOD()">&#x1F480; BSOD</button>
+    </div>
+
+    <!-- Pestaña: BSOD -->
+    <div id="wuPaneBSOD" style="display:none">
+      <div id="wuBsodLoading" style="text-align:center;padding:32px 0">
+        <div style="width:40px;height:40px;border:3px solid var(--bar-track);border-top-color:var(--brand);border-radius:50%;animation:spin .8s linear infinite;margin:0 auto 14px"></div>
+        <div style="font-size:14px;color:var(--txt2)">Buscando pantallazos azules&hellip;</div>
+      </div>
+      <div id="wuBsodList" style="display:none;max-height:360px;overflow-y:auto;padding-right:4px"></div>
     </div>
 
     <!-- Pestaña: Log de Eventos -->
@@ -8000,6 +8182,89 @@ new MutationObserver(function() {
   if (abierto && !_wuModalAbierto) cambiarPestañaWindowsAlDia('actualizaciones');
   _wuModalAbierto = abierto;
 }).observe(document.getElementById('wuModal'), {attributes: true, attributeFilter: ['class']});
+
+// ── Windows al Día: pestaña BSOD ───────────────────────────────────────────
+// cambiarPestañaWindowsAlDia solo conoce Actualizaciones/Log y no se toca:
+// al tocar BSOD se ocultan esos dos paneles a mano, y cuando esa función
+// vuelve a mostrar alguno (clic en su pestaña o reapertura del modal) el
+// observer de abajo oculta el panel BSOD. Datos frescos en cada clic;
+// _wuBsodReqId descarta respuestas viejas.
+var _wuBsodReqId = 0;
+
+function mostrarPestañaBSOD() {
+  document.getElementById('wuTabLog').classList.remove('active');
+  document.getElementById('wuTabActualizaciones').classList.remove('active');
+  document.getElementById('wuTabBSOD').classList.add('active');
+  document.getElementById('wuPaneLog').style.display             = 'none';
+  document.getElementById('wuPaneActualizaciones').style.display = 'none';
+  document.getElementById('wuPaneBSOD').style.display            = 'block';
+  cargarBSOD();
+}
+
+function _wuBsodOcultarSiCorresponde() {
+  var pane = document.getElementById('wuPaneBSOD');
+  if (pane.style.display === 'none') return;
+  if (document.getElementById('wuPaneLog').style.display !== 'block'
+      && document.getElementById('wuPaneActualizaciones').style.display !== 'block') return;
+  pane.style.display = 'none';
+  document.getElementById('wuTabBSOD').classList.remove('active');
+  _wuBsodReqId++;
+}
+
+new MutationObserver(_wuBsodOcultarSiCorresponde)
+  .observe(document.getElementById('wuPaneLog'), {attributes: true, attributeFilter: ['style']});
+new MutationObserver(_wuBsodOcultarSiCorresponde)
+  .observe(document.getElementById('wuPaneActualizaciones'), {attributes: true, attributeFilter: ['style']});
+
+function cargarBSOD() {
+  document.getElementById('wuBsodLoading').style.display = 'block';
+  document.getElementById('wuBsodList').style.display = 'none';
+  if (!window.pywebview || !window.pywebview.api) return;
+  var miId = ++_wuBsodReqId;
+  window.pywebview.api.get_bsod_events().then(function(raw) {
+    if (miId !== _wuBsodReqId) return;
+    var d = JSON.parse(raw);
+    if (d.error) {
+      _wuBsodMostrarLista('<div class="wu-result err">&#x26A0;&#xFE0F; No se pudo buscar pantallazos azules: ' + _escHtml(d.error) + '</div>');
+      return;
+    }
+    renderizarBSOD(Array.isArray(d) ? d : []);
+  }).catch(function(err) {
+    if (miId !== _wuBsodReqId) return;
+    _wuBsodMostrarLista('<div class="wu-result err">&#x26A0;&#xFE0F; Error inesperado: ' + _escHtml(err) + '</div>');
+  });
+}
+
+function _wuBsodMostrarLista(html) {
+  var lista = document.getElementById('wuBsodList');
+  lista.innerHTML = html;
+  document.getElementById('wuBsodLoading').style.display = 'none';
+  lista.style.display = 'block';
+  lista.scrollTop = 0;
+}
+
+function renderizarBSOD(eventos) {
+  if (!eventos.length) {
+    _wuBsodMostrarLista('<div class="wu-result ok">&#x2705; Sin pantallazos azules registrados<br>'
+      + '<span style="font-weight:400">No se encontraron archivos de volcado en este equipo.</span></div>');
+    return;
+  }
+  _wuBsodMostrarLista(eventos.map(function(ev) {
+    var codigo = _escHtml(ev.codigo) + (ev.hex ? ' (' + _escHtml(ev.hex) + ')' : '');
+    var archivo = ev.archivo ? _escHtml(ev.archivo) : 'No determinado (requiere analizar el volcado)';
+    return '<div class="wu-bsod">'
+      + '<div class="wu-bsod-top">'
+      +   '<span class="wu-bsod-badge">&#x1F480; BSOD</span>'
+      +   '<span class="wu-evt-time" style="margin-left:0">' + _escHtml(ev.fecha) + '</span>'
+      + '</div>'
+      + '<div class="wu-bsod-line">C&oacute;digo de error: <b>' + codigo + '</b></div>'
+      + '<div class="wu-bsod-line">Archivo causante: ' + archivo + '</div>'
+      + '<div class="wu-bsod-sep"></div>'
+      + '<div class="wu-bsod-line"><b>Descripci&oacute;n:</b> ' + _escHtml(ev.descripcion) + '</div>'
+      + '<div class="wu-bsod-line" style="margin-top:4px"><b>Recomendaci&oacute;n:</b> ' + _escHtml(ev.recomendacion) + '</div>'
+      + '</div>';
+  }).join(''));
+}
 
 // ── Tema guardado en config.json ───────────────────────────────────────────
 // Al iniciar se aplica con el mismo toggleTheme() del botón (solo si difiere).
